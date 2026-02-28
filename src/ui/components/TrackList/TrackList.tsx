@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import type { TrackModel } from "../../../model/types";
 import "./trackList.css";
 import { TrackRow } from "./TrackRow";
@@ -10,7 +11,8 @@ type TrackListProps = {
   onToggleTrackSolo: (trackId: string) => void;
   onDeleteTrack: (trackId: string) => void;
   onMasterVolumeChange: (volume: number) => void;
-  onAddTrack: (type: "drum" | "audio") => void;
+  onAddDrumTrack: () => void;
+  onAddAudioFiles: (files: FileList) => void;
 };
 
 export function TrackList({
@@ -21,8 +23,11 @@ export function TrackList({
   onToggleTrackSolo,
   onDeleteTrack,
   onMasterVolumeChange,
-  onAddTrack
+  onAddDrumTrack,
+  onAddAudioFiles
 }: TrackListProps) {
+  const audioInputRef = useRef<HTMLInputElement | null>(null);
+
   return (
     <section className="track-list">
       <header className="track-list__header">
@@ -31,12 +36,31 @@ export function TrackList({
           <h2>Tracks</h2>
         </div>
         <div className="track-list__actions">
-          <button type="button" onClick={() => onAddTrack("drum")}>
+          <button type="button" onClick={onAddDrumTrack}>
             Add Drum
           </button>
-          <button type="button" onClick={() => onAddTrack("audio")}>
+          <button
+            type="button"
+            onClick={() => {
+              audioInputRef.current?.click();
+            }}
+          >
             Add Audio
           </button>
+          <input
+            ref={audioInputRef}
+            type="file"
+            accept="audio/*,.wav,.mp3,.ogg,.m4a,.aac,.flac"
+            multiple
+            hidden
+            onChange={(event) => {
+              const { files } = event.target;
+              if (files && files.length > 0) {
+                onAddAudioFiles(files);
+              }
+              event.target.value = "";
+            }}
+          />
         </div>
       </header>
 

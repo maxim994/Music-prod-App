@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Renderer } from "../audio/Renderer";
 import { DrumSynth } from "../audio/DrumSynth";
 import type {
+  AudioClipModel,
   DrumClipModel,
   DrumPatternModel,
   ProjectSnapshot,
@@ -77,6 +78,49 @@ const getPatternDisplayName = (index: number) => String.fromCharCode(65 + index)
 const isDrumClip = (clip: TrackClipModel): clip is DrumClipModel => clip.kind === "drum";
 
 const clampVolume = (value: number): number => Math.min(1, Math.max(0, value));
+
+const getClipEndBar = (clip: TrackClipModel): number => clip.startBar + clip.lengthBars;
+
+const getTrackEndBar = (track: TrackModel): number =>
+  track.clips.reduce((maxBar, clip) => Math.max(maxBar, getClipEndBar(clip)), 0);
+
+const getFileStem = (fileName: string): string => fileName.replace(/\.[^.]+$/, "") || fileName;
+
+const readFileAsDataUrl = (file: File): Promise<string> =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === "string") {
+        resolve(reader.result);
+        return;
+      }
+      reject(new Error(`Could not read ${file.name}.`));
+    };
+    reader.onerror = () => reject(reader.error ?? new Error(`Could not read ${file.name}.`));
+    reader.readAsDataURL(file);
+  });
+
+const readAudioDuration = (file: File): Promise<number> =>
+  new Promise((resolve, reject) => {
+    const objectUrl = URL.createObjectURL(file);
+    const audio = document.createElement("audio");
+    const cleanup = () => {
+      audio.removeAttribute("src");
+      URL.revokeObjectURL(objectUrl);
+    };
+
+    audio.preload = "metadata";
+    audio.onloadedmetadata = () => {
+      const duration = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : 0;
+      cleanup();
+      resolve(duration);
+    };
+    audio.onerror = () => {
+      cleanup();
+      reject(new Error(`Could not read audio metadata for ${file.name}.`));
+    };
+    audio.src = objectUrl;
+  });
 
 const clampClipToSong = <T extends TrackClipModel>(clip: T, bars: number): T => {
   const startBar = Math.max(0, Math.floor(clip.startBar));
@@ -630,6 +674,95 @@ export function App() {
     });
   };
 
+  const handleAddAudioFiles = async (files: FileList) => {
+    const selectedFiles = Array.from(files);
+    if (selectedFiles.length === 0) {
+      return;
+    }
+
+    setStatus("Importing audio...");
+
+    const preparedImports = await Promise.allSettled(
+      selectedFiles.map(async (file) => {
+        const [audioDataUrl, durationSeconds] = await Promise.all([
+          readFileAsDataUrl(file),
+          readAudioDuration(file)
+        ]);
+
+        return {
+          audioDataUrl,
+          lengthBars: Math.max(1, Math.ceil(durationSeconds / secondsPerBar)),
+          name: getFileStem(file.name)
+        };
+      })
+    );
+
+    const successfulImports = preparedImports
+      .filter(
+        (
+          result
+        ): result is PromiseFulfilledResult<{
+          audioDataUrl: string;
+          lengthBars: number;
+          name: string;
+        }> => result.status === "fulfilled"
+      )
+      .map((result) => result.value);
+
+    if (successfulImports.length === 0) {
+      setStatus("Audio import failed");
+      return;
+    }
+
+    const nextTracks = tracksRef.current.map((track) => ({
+      ...track,
+      clips: [...track.clips]
+    }));
+
+    let audioTrack = nextTracks.find((track) => track.type === "audio") ?? null;
+    if (!audioTrack) {
+      const nextTrackId = `track-${idCounterRef.current++}`;
+      const trackNumber = nextTracks.filter((track) => track.type === "audio").length + 1;
+      audioTrack = createTrack(nextTrackId, getDefaultTrackName("audio", trackNumber), "audio");
+      nextTracks.push(audioTrack);
+    }
+
+    let nextSongBars = Math.max(1, songBarsRef.current);
+    let lastImportedClipId: string | null = null;
+
+    for (const importedClip of successfulImports) {
+      const clipId = `clip-${idCounterRef.current++}`;
+      const startBar = getTrackEndBar(audioTrack);
+      const nextClip: AudioClipModel = {
+        id: clipId,
+        kind: "audio",
+        trackId: audioTrack.id,
+        startBar,
+        lengthBars: importedClip.lengthBars,
+        name: importedClip.name,
+        audioDataUrl: importedClip.audioDataUrl
+      };
+
+      audioTrack.clips = [...audioTrack.clips, nextClip];
+      nextSongBars = Math.max(nextSongBars, getClipEndBar(nextClip));
+      lastImportedClipId = clipId;
+    }
+
+    tracksRef.current = nextTracks;
+    songBarsRef.current = nextSongBars;
+    setTracks(nextTracks);
+    setSongBars(nextSongBars);
+    setSelectedClipId(lastImportedClipId);
+
+    const failedImports = preparedImports.length - successfulImports.length;
+    const fileLabel = successfulImports.length === 1 ? "file" : "files";
+    setStatus(
+      failedImports > 0
+        ? `Imported ${successfulImports.length} audio ${fileLabel}, ${failedImports} failed`
+        : `Imported ${successfulImports.length} audio ${fileLabel}`
+    );
+  };
+
   const handleDeleteTrack = (trackId: string) => {
     const trackToDelete = tracks.find((track) => track.id === trackId);
     if (!trackToDelete) {
@@ -699,7 +832,8 @@ export function App() {
         onToggleTrackSolo={handleToggleTrackSolo}
         onDeleteTrack={handleDeleteTrack}
         onMasterVolumeChange={(volume) => setMasterVolume(clampVolume(volume))}
-        onAddTrack={handleAddTrack}
+        onAddDrumTrack={() => handleAddTrack("drum")}
+        onAddAudioFiles={handleAddAudioFiles}
       />
       <Timeline
         bpm={bpm}
