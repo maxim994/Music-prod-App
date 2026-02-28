@@ -58,6 +58,12 @@
   border-color: rgba(255, 255, 255, 0.24);
 }
 
+.transport-btn--active {
+  background: rgba(141, 226, 200, 0.18);
+  border-color: rgba(141, 226, 200, 0.4);
+  color: #8de2c8;
+}
+
 .transport-btn--export:disabled {
   opacity: 0.6;
   cursor: not-allowed;
@@ -80,7 +86,8 @@
   color: rgba(233, 237, 244, 0.7);
 }
 
-.transport-bpm input {
+.transport-bpm input,
+.transport-bpm select {
   width: 80px;
   background: transparent;
   border: none;
@@ -89,6 +96,10 @@
   font-weight: 700;
   text-align: right;
   outline: none;
+}
+
+.transport-bpm select {
+  cursor: pointer;
 }
 
 .transport-time {

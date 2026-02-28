@@ -29,6 +29,8 @@ type HistorySnapshot = {
   tracks: TrackModel[];
 };
 
+const MIN_GRID_RESOLUTION = 1 / 16;
+
 const createEmptyPattern = (): boolean[][] =>
   Array.from({ length: 3 }, () => Array.from({ length: 16 }, () => false));
 
@@ -100,6 +102,10 @@ const clampTrackBpm = (value: number, fallbackBpm: number): number => {
   return Math.max(30, Math.min(300, Math.round(value)));
 };
 
+const normalizeBarValue = (value: number): number => Math.round(value / MIN_GRID_RESOLUTION) * MIN_GRID_RESOLUTION;
+
+const roundBarPrecision = (value: number): number => Math.round(value * 1000) / 1000;
+
 const getTrackTempoRatio = (track: Pick<TrackModel, "bpm">, projectBpm: number): number =>
   clampTrackBpm(track.bpm, projectBpm) / Math.max(1, projectBpm);
 
@@ -146,10 +152,18 @@ const readAudioDuration = (file: File): Promise<number> =>
     audio.src = objectUrl;
   });
 
-const clampClipToSong = <T extends TrackClipModel>(clip: T, bars: number): T => {
-  const startBar = Math.max(0, Math.floor(clip.startBar));
-  const maxLength = Math.max(1, bars - startBar);
-  const lengthBars = Math.max(1, Math.min(Math.floor(clip.lengthBars), maxLength));
+const clampClipToSong = <T extends TrackClipModel>(
+  clip: T,
+  bars: number,
+  snapStep: number | null = MIN_GRID_RESOLUTION
+): T => {
+  const normalize = (value: number): number =>
+    snapStep ? Math.round(value / snapStep) * snapStep : roundBarPrecision(value);
+  const startBar = normalize(Math.max(0, clip.startBar));
+  const maxLength = Math.max(snapStep ?? MIN_GRID_RESOLUTION, bars - startBar);
+  const lengthBars = normalize(
+    Math.max(snapStep ?? MIN_GRID_RESOLUTION, Math.min(clip.lengthBars, maxLength))
+  );
   return {
     ...clip,
     startBar,
@@ -158,7 +172,7 @@ const clampClipToSong = <T extends TrackClipModel>(clip: T, bars: number): T => 
 };
 
 const getActiveDrumClip = (track: TrackModel, barPosition: number): DrumClipModel | null => {
-  const activeBar = Math.max(0, Math.floor(barPosition));
+  const activeBar = Math.max(0, barPosition);
   const sortedClips = track.clips.filter(isDrumClip).sort((a, b) => a.startBar - b.startBar);
   return (
     sortedClips.find(
@@ -227,6 +241,8 @@ const getLoopedSeconds = (playhead: number, songLength: number): number => {
 
 export function App() {
   const [bpm, setBpm] = useState(120);
+  const [gridResolution, setGridResolution] = useState(1);
+  const [snapEnabled, setSnapEnabled] = useState(true);
   const [isRunning, setIsRunning] = useState(false);
   const [playheadSeconds, setPlayheadSeconds] = useState(0);
   const [songBars, setSongBars] = useState(16);
@@ -486,7 +502,7 @@ export function App() {
           const totalSongSteps = Math.max(16, songBarsRef.current * 16);
           const absoluteStep = songStepRef.current % totalSongSteps;
           const stepIndex = absoluteStep % 16;
-          const barIndex = Math.floor(absoluteStep / 16);
+          const barPosition = absoluteStep / 16;
           setActiveStep(stepIndex);
 
           const synth = synthRef.current;
@@ -500,7 +516,7 @@ export function App() {
                 continue;
               }
 
-              const activeClip = getActiveDrumClip(track, barIndex);
+              const activeClip = getActiveDrumClip(track, barPosition);
               if (!activeClip) {
                 continue;
               }
@@ -518,7 +534,8 @@ export function App() {
                 : Math.ceil(localStartStep);
 
               for (let localStep = firstScheduledStep; localStep < localEndStep; localStep += 1) {
-                const localStepIndex = ((localStep % 16) + 16) % 16;
+                const clipStepOffset = Math.round(activeClip.startBar * 16);
+                const localStepIndex = (((localStep - clipStepOffset) % 16) + 16) % 16;
                 const offsetSeconds =
                   ((localStep - localStartStep) / tempoRatio) * projectStepSeconds;
 
@@ -866,36 +883,42 @@ export function App() {
   const handleSongBarsChange = (bars: number) => {
     if (!Number.isFinite(bars)) return;
     const nextBars = Math.max(1, Math.floor(bars));
+    const activeSnapStep = snapEnabled ? gridResolution : null;
     setSongBars(nextBars);
     setTracks((prev) =>
       prev.map((track) => ({
         ...track,
         clips: track.clips.map((clip) => {
-          const maxStart = Math.max(0, nextBars - 1);
+          const minLength = activeSnapStep ?? MIN_GRID_RESOLUTION;
+          const maxStart = Math.max(0, nextBars - minLength);
           const startBar = Math.min(clip.startBar, maxStart);
-          return clampClipToSong({ ...clip, startBar }, nextBars);
+          return clampClipToSong({ ...clip, startBar }, nextBars, activeSnapStep);
         })
       }))
     );
   };
 
   const handleMoveClip = (clipId: string, startBar: number) => {
+    const activeSnapStep = snapEnabled ? gridResolution : null;
     setTracks((prev) =>
       prev.map((track) => ({
         ...track,
         clips: track.clips.map((clip) =>
-          clip.id === clipId ? clampClipToSong({ ...clip, startBar }, songBars) : clip
+          clip.id === clipId ? clampClipToSong({ ...clip, startBar }, songBars, activeSnapStep) : clip
         )
       }))
     );
   };
 
   const handleResizeClip = (clipId: string, startBar: number, lengthBars: number) => {
+    const activeSnapStep = snapEnabled ? gridResolution : null;
     setTracks((prev) =>
       prev.map((track) => ({
         ...track,
         clips: track.clips.map((clip) =>
-          clip.id === clipId ? clampClipToSong({ ...clip, startBar, lengthBars }, songBars) : clip
+          clip.id === clipId
+            ? clampClipToSong({ ...clip, startBar, lengthBars }, songBars, activeSnapStep)
+            : clip
         )
       }))
     );
@@ -904,6 +927,8 @@ export function App() {
   const handleDuplicateClip = (clipId: string) => {
     pushHistoryState();
     const newId = `clip-${idCounterRef.current++}`;
+    const activeSnapStep = snapEnabled ? gridResolution : null;
+    const minLength = activeSnapStep ?? MIN_GRID_RESOLUTION;
 
     setTracks((prev) =>
       prev.map((track) => {
@@ -913,9 +938,9 @@ export function App() {
         }
 
         const nextStart = source.startBar + source.lengthBars;
-        const maxStart = Math.max(0, songBars - 1);
+        const maxStart = Math.max(0, songBars - minLength);
         const startBar = Math.min(nextStart, maxStart);
-        const lengthBars = Math.min(source.lengthBars, Math.max(1, songBars - startBar));
+        const lengthBars = Math.min(source.lengthBars, Math.max(minLength, songBars - startBar));
         const duplicate = clampClipToSong(
           {
             ...source,
@@ -923,7 +948,8 @@ export function App() {
             startBar,
             lengthBars
           },
-          songBars
+          songBars,
+          activeSnapStep
         );
 
         return {
@@ -1246,6 +1272,10 @@ export function App() {
         onPause={handlePause}
         onStop={handleStop}
         onBpmChange={setBpm}
+        gridResolution={gridResolution}
+        onGridResolutionChange={setGridResolution}
+        snapEnabled={snapEnabled}
+        onSnapEnabledChange={setSnapEnabled}
         songBars={songBars}
         onSongBarsChange={handleSongBarsChange}
         onUndo={undo}
@@ -1269,6 +1299,8 @@ export function App() {
       />
       <Timeline
         bpm={bpm}
+        gridResolution={gridResolution}
+        snapEnabled={snapEnabled}
         isRunning={isRunning}
         playheadBars={playheadBars}
         songBars={songBars}

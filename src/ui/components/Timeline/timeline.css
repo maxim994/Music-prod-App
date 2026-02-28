@@ -118,6 +118,14 @@
   border-right: 1px solid rgba(255, 255, 255, 0.06);
 }
 
+.grid__line--minor {
+  border-right-color: rgba(255, 255, 255, 0.035);
+}
+
+.grid__line--major {
+  border-right-color: rgba(255, 255, 255, 0.09);
+}
+
 .timeline__empty {
   position: absolute;
   inset: 0;

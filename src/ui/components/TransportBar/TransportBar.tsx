@@ -8,6 +8,10 @@ type TransportBarProps = {
   onPause: () => void;
   onStop: () => void;
   onBpmChange: (bpm: number) => void;
+  gridResolution: number;
+  onGridResolutionChange: (resolution: number) => void;
+  snapEnabled: boolean;
+  onSnapEnabledChange: (enabled: boolean) => void;
   songBars: number;
   onSongBarsChange: (bars: number) => void;
   onUndo: () => void;
@@ -27,6 +31,10 @@ export function TransportBar({
   onPause,
   onStop,
   onBpmChange,
+  gridResolution,
+  onGridResolutionChange,
+  snapEnabled,
+  onSnapEnabledChange,
   songBars,
   onSongBarsChange,
   onUndo,
@@ -79,6 +87,32 @@ export function TransportBar({
             onChange={(event) => onSongBarsChange(Number(event.target.value))}
           />
         </label>
+      </div>
+
+      <div className="transport-group transport-group--grid">
+        <label className="transport-bpm">
+          <span className="transport-label">Grid</span>
+          <select
+            value={String(gridResolution)}
+            onChange={(event) => onGridResolutionChange(Number(event.target.value))}
+          >
+            <option value="1">1 Bar</option>
+            <option value="0.5">1/2</option>
+            <option value="0.25">1/4</option>
+            <option value="0.125">1/8</option>
+            <option value="0.0625">1/16</option>
+          </select>
+        </label>
+      </div>
+
+      <div className="transport-group transport-group--snap">
+        <button
+          type="button"
+          className={`transport-btn ${snapEnabled ? "transport-btn--active" : ""}`}
+          onClick={() => onSnapEnabledChange(!snapEnabled)}
+        >
+          {snapEnabled ? "Snap On" : "Snap Off"}
+        </button>
       </div>
 
       <div className="transport-group transport-group--time">

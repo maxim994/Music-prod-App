@@ -7,6 +7,8 @@ type ClipProps = {
   startBars: number;
   lengthBars: number;
   durationBars: number;
+  gridResolution: number;
+  snapEnabled: boolean;
   isActive: boolean;
   isSelected: boolean;
   trackWidth: number;
@@ -30,6 +32,8 @@ export function Clip({
   startBars,
   lengthBars,
   durationBars,
+  gridResolution,
+  snapEnabled,
   isActive,
   isSelected,
   trackWidth,
@@ -84,7 +88,10 @@ export function Clip({
   const updateDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (!dragRef.current) return;
     const { mode, startX, startBar, lengthBars: initialLength, barWidth } = dragRef.current;
-    const deltaBars = Math.round((event.clientX - startX) / barWidth);
+    const rawDeltaBars = (event.clientX - startX) / barWidth;
+    const deltaBars = snapEnabled
+      ? Math.round(rawDeltaBars / gridResolution) * gridResolution
+      : rawDeltaBars;
 
     if (mode === "move") {
       const nextStart = clamp(startBar + deltaBars, 0, safeBars - initialLength);

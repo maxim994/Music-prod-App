@@ -22,6 +22,8 @@ type TimelineTrack = {
 
 type TimelineProps = {
   bpm: number;
+  gridResolution: number;
+  snapEnabled: boolean;
   isRunning: boolean;
   playheadBars: number;
   songBars: number;
@@ -48,6 +50,8 @@ const LABEL_WIDTH = 148;
 
 export function Timeline({
   bpm,
+  gridResolution,
+  snapEnabled,
   isRunning,
   playheadBars,
   songBars,
@@ -110,8 +114,10 @@ export function Timeline({
 
     const relativeX = Math.max(0, Math.min(trackWidth, clientX - trackLeft));
     const rawBar = (relativeX / trackWidth) * safeBars;
-    const snappedBar = Math.round(rawBar);
-    const clampedBar = Math.max(0, Math.min(safeBars, snappedBar));
+    const nextBar = snapEnabled
+      ? Math.round(rawBar / gridResolution) * gridResolution
+      : rawBar;
+    const clampedBar = Math.max(0, Math.min(safeBars, nextBar));
     return clampedBar >= safeBars ? Math.max(0, safeBars - 0.001) : clampedBar;
   };
 
@@ -186,7 +192,7 @@ export function Timeline({
                 className="timeline__track"
                 style={{ width: laneWidth, ["--bar-width" as string]: `${barWidth}px` }}
               >
-                <Grid bars={safeBars} />
+                <Grid bars={safeBars} resolution={gridResolution} />
                 {track.clips.map((clip) => (
                   <Clip
                     key={clip.id}
@@ -195,6 +201,8 @@ export function Timeline({
                     startBars={clip.startBar}
                     lengthBars={clip.lengthBars}
                     durationBars={safeBars}
+                    gridResolution={gridResolution}
+                    snapEnabled={snapEnabled}
                     isActive={activeClipIds.includes(clip.id)}
                     isSelected={clip.id === selectedClipId}
                     trackWidth={laneWidth}
