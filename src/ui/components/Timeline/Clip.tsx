@@ -13,6 +13,7 @@ type ClipProps = {
   trackId: string;
   trackOptions: { id: string; name: string }[];
   onSelect: () => void;
+  onBeginChange: () => void;
   onMove: (startBar: number) => void;
   onResize: (startBar: number, lengthBars: number) => void;
   onDuplicate: () => void;
@@ -35,6 +36,7 @@ export function Clip({
   trackId,
   trackOptions,
   onSelect,
+  onBeginChange,
   onMove,
   onResize,
   onDuplicate,
@@ -66,6 +68,7 @@ export function Clip({
     if (trackWidth <= 0) return;
     event.preventDefault();
     event.stopPropagation();
+    onBeginChange();
     const barWidth = trackWidth / safeBars;
     dragRef.current = {
       mode,

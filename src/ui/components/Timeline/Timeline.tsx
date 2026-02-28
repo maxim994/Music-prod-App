@@ -22,18 +22,23 @@ type TimelineTrack = {
 
 type TimelineProps = {
   bpm: number;
+  isRunning: boolean;
   playheadBars: number;
   songBars: number;
   tracks: TimelineTrack[];
   activeClipIds: string[];
   selectedClipId: string | null;
   onSelectClip: (clipId: string) => void;
+  onBeginClipChange: () => void;
   onMoveClip: (clipId: string, startBar: number) => void;
   onResizeClip: (clipId: string, startBar: number, lengthBars: number) => void;
   onDuplicateClip: (clipId: string) => void;
   onDeleteClip: (clipId: string) => void;
   onChangeClipPattern: (clipId: string, patternId: string) => void;
   onChangeClipTrack: (clipId: string, trackId: string) => void;
+  onBeginScrub: () => void;
+  onScrubPlayhead: (barPosition: number) => void;
+  onEndScrub: (barPosition: number) => void;
   patternOptions: { id: string; name: string }[];
   trackOptions: { id: string; name: string; type: "drum" | "audio" }[];
 };
@@ -43,25 +48,35 @@ const LABEL_WIDTH = 148;
 
 export function Timeline({
   bpm,
+  isRunning,
   playheadBars,
   songBars,
   tracks,
   activeClipIds,
   selectedClipId,
   onSelectClip,
+  onBeginClipChange,
   onMoveClip,
   onResizeClip,
   onDuplicateClip,
   onDeleteClip,
   onChangeClipPattern,
   onChangeClipTrack,
+  onBeginScrub,
+  onScrubPlayhead,
+  onEndScrub,
   patternOptions,
   trackOptions
 }: TimelineProps) {
   const safeBars = Math.max(1, songBars);
-  const loopedBars = playheadBars % safeBars;
+  const loopedBars = ((playheadBars % safeBars) + safeBars) % safeBars;
   const playheadPercent = (loopedBars / safeBars) * 100;
   const viewportRef = useRef<HTMLDivElement | null>(null);
+  const playheadDragRef = useRef<{
+    pointerId: number;
+    trackLeft: number;
+    trackWidth: number;
+  } | null>(null);
   const [viewportWidth, setViewportWidth] = useState(0);
 
   useEffect(() => {
@@ -87,6 +102,67 @@ export function Timeline({
   const laneViewportWidth = Math.max(320, viewportWidth - LABEL_WIDTH - 16);
   const barWidth = laneViewportWidth > 0 ? laneViewportWidth / visibleBars : 0;
   const laneWidth = Math.max(1, safeBars * barWidth);
+
+  const getSnappedBarFromPointer = (clientX: number, trackLeft: number, trackWidth: number) => {
+    if (trackWidth <= 0) {
+      return 0;
+    }
+
+    const relativeX = Math.max(0, Math.min(trackWidth, clientX - trackLeft));
+    const rawBar = (relativeX / trackWidth) * safeBars;
+    const snappedBar = Math.round(rawBar);
+    const clampedBar = Math.max(0, Math.min(safeBars, snappedBar));
+    return clampedBar >= safeBars ? Math.max(0, safeBars - 0.001) : clampedBar;
+  };
+
+  const handlePlayheadPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    const track = event.currentTarget.parentElement;
+    if (!(track instanceof HTMLDivElement)) {
+      return;
+    }
+
+    const rect = track.getBoundingClientRect();
+    playheadDragRef.current = {
+      pointerId: event.pointerId,
+      trackLeft: rect.left,
+      trackWidth: rect.width
+    };
+
+    onBeginScrub();
+    onScrubPlayhead(getSnappedBarFromPointer(event.clientX, rect.left, rect.width));
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+
+  const handlePlayheadPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    const dragState = playheadDragRef.current;
+    if (!dragState || dragState.pointerId !== event.pointerId) {
+      return;
+    }
+
+    onScrubPlayhead(
+      getSnappedBarFromPointer(event.clientX, dragState.trackLeft, dragState.trackWidth)
+    );
+  };
+
+  const handlePlayheadPointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
+    const dragState = playheadDragRef.current;
+    if (!dragState || dragState.pointerId !== event.pointerId) {
+      return;
+    }
+
+    const nextBar = getSnappedBarFromPointer(event.clientX, dragState.trackLeft, dragState.trackWidth);
+
+    try {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    } catch {
+      // Ignore capture release errors.
+    }
+
+    playheadDragRef.current = null;
+    onEndScrub(nextBar);
+  };
 
   return (
     <section className="timeline">
@@ -127,6 +203,7 @@ export function Timeline({
                       .filter((option) => option.type === clip.kind)
                       .map((option) => ({ id: option.id, name: option.name }))}
                     onSelect={() => onSelectClip(clip.id)}
+                    onBeginChange={onBeginClipChange}
                     onMove={(startBar) => onMoveClip(clip.id, startBar)}
                     onResize={(startBar, lengthBars) => onResizeClip(clip.id, startBar, lengthBars)}
                     onDuplicate={() => onDuplicateClip(clip.id)}
@@ -144,6 +221,14 @@ export function Timeline({
                 {track.clips.length === 0 ? (
                   <div className="timeline__empty">No clips on this track</div>
                 ) : null}
+                <div
+                  className={`timeline__playhead-hitbox ${isRunning ? "is-running" : ""}`}
+                  style={{ left: `${playheadPercent}%` }}
+                  onPointerDown={handlePlayheadPointerDown}
+                  onPointerMove={handlePlayheadPointerMove}
+                  onPointerUp={handlePlayheadPointerUp}
+                  onPointerCancel={handlePlayheadPointerUp}
+                />
                 <div className="timeline__playhead" style={{ left: `${playheadPercent}%` }} />
               </div>
             </div>

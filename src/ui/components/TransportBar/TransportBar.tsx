@@ -10,6 +10,7 @@ type TransportBarProps = {
   onBpmChange: (bpm: number) => void;
   songBars: number;
   onSongBarsChange: (bars: number) => void;
+  onUndo: () => void;
   onSave: () => void;
   onLoad: () => void;
   onExportWav: () => void;
@@ -28,6 +29,7 @@ export function TransportBar({
   onBpmChange,
   songBars,
   onSongBarsChange,
+  onUndo,
   onSave,
   onLoad,
   onExportWav,
@@ -86,6 +88,9 @@ export function TransportBar({
       </div>
 
       <div className="transport-group transport-group--save">
+        <button type="button" className="transport-btn" onClick={onUndo}>
+          Undo
+        </button>
         <button type="button" className="transport-btn" onClick={onSave}>
           Save
         </button>

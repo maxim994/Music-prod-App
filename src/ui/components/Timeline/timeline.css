@@ -235,6 +235,37 @@
   background: rgba(255, 255, 255, 0.8);
   box-shadow: 0 0 12px rgba(255, 255, 255, 0.5);
   z-index: 3;
+  pointer-events: none;
+}
+
+.timeline__playhead-hitbox {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 16px;
+  transform: translateX(-50%);
+  cursor: ew-resize;
+  z-index: 4;
+  touch-action: none;
+}
+
+.timeline__playhead-hitbox::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 2px;
+  transform: translateX(-50%);
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.timeline__playhead-hitbox.is-running {
+  cursor: grab;
+}
+
+.timeline__playhead-hitbox:active {
+  cursor: grabbing;
 }
 
 @media (max-width: 900px) {

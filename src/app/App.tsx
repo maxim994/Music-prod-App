@@ -19,6 +19,16 @@ import { TransportBar } from "../ui/components/TransportBar/TransportBar";
 
 type DrumPatternId = string;
 
+type HistorySnapshot = {
+  bpm: number;
+  masterVolume: number;
+  patterns: DrumPatternModel[];
+  selectedClipId: string | null;
+  selectedPatternId: DrumPatternId;
+  songBars: number;
+  tracks: TrackModel[];
+};
+
 const createEmptyPattern = (): boolean[][] =>
   Array.from({ length: 3 }, () => Array.from({ length: 16 }, () => false));
 
@@ -230,6 +240,8 @@ export function App() {
   const [activeStep, setActiveStep] = useState(0);
 
   const bpmRef = useRef(bpm);
+  const selectedPatternIdRef = useRef(selectedPatternId);
+  const selectedClipIdRef = useRef(selectedClipId);
   const patternsRef = useRef(patterns);
   const tracksRef = useRef(tracks);
   const songBarsRef = useRef(songBars);
@@ -240,6 +252,9 @@ export function App() {
   const sequencerRef = useRef<StepSequencer | null>(null);
   const synthRef = useRef<DrumSynth | null>(null);
   const audioElementsRef = useRef(new Map<string, HTMLAudioElement>());
+  const resumeAfterScrubRef = useRef(false);
+  const undoStackRef = useRef<HistorySnapshot[]>([]);
+  const redoStackRef = useRef<HistorySnapshot[]>([]);
   const songStepRef = useRef(0);
   const idCounterRef = useRef(4);
 
@@ -258,6 +273,10 @@ export function App() {
       setSelectedPatternId(patterns[0].id);
     }
   }, [patterns, selectedPatternId]);
+
+  useEffect(() => {
+    selectedPatternIdRef.current = selectedPatternId;
+  }, [selectedPatternId]);
 
   useEffect(() => {
     tracksRef.current = tracks;
@@ -381,18 +400,81 @@ export function App() {
     }
   };
 
+  const cloneHistorySnapshot = (snapshot: HistorySnapshot): HistorySnapshot => structuredClone(snapshot);
+
+  const createHistorySnapshot = (): HistorySnapshot =>
+    cloneHistorySnapshot({
+      bpm: bpmRef.current,
+      masterVolume: masterVolumeRef.current,
+      patterns: patternsRef.current,
+      selectedClipId: selectedClipIdRef.current,
+      selectedPatternId: selectedPatternIdRef.current,
+      songBars: songBarsRef.current,
+      tracks: tracksRef.current
+    });
+
+  const applyHistorySnapshot = (snapshot: HistorySnapshot) => {
+    const nextSnapshot = cloneHistorySnapshot(snapshot);
+
+    bpmRef.current = nextSnapshot.bpm;
+    masterVolumeRef.current = nextSnapshot.masterVolume;
+    patternsRef.current = nextSnapshot.patterns;
+    selectedClipIdRef.current = nextSnapshot.selectedClipId;
+    selectedPatternIdRef.current = nextSnapshot.selectedPatternId;
+    songBarsRef.current = nextSnapshot.songBars;
+    tracksRef.current = nextSnapshot.tracks;
+
+    setBpm(nextSnapshot.bpm);
+    setMasterVolume(nextSnapshot.masterVolume);
+    setPatterns(nextSnapshot.patterns);
+    setSelectedClipId(nextSnapshot.selectedClipId);
+    setSelectedPatternId(nextSnapshot.selectedPatternId);
+    setSongBars(nextSnapshot.songBars);
+    setTracks(nextSnapshot.tracks);
+  };
+
+  const pushHistoryState = () => {
+    undoStackRef.current.push(createHistorySnapshot());
+    redoStackRef.current = [];
+  };
+
+  const undo = () => {
+    const previousSnapshot = undoStackRef.current.pop();
+    if (!previousSnapshot) {
+      return;
+    }
+
+    redoStackRef.current.push(createHistorySnapshot());
+    applyHistorySnapshot(previousSnapshot);
+  };
+
+  const redo = () => {
+    const nextSnapshot = redoStackRef.current.pop();
+    if (!nextSnapshot) {
+      return;
+    }
+
+    undoStackRef.current.push(createHistorySnapshot());
+    applyHistorySnapshot(nextSnapshot);
+  };
+
   useEffect(() => {
     idCounterRef.current = Math.max(idCounterRef.current, getNextIdSeed(patterns, tracks));
   }, [patterns, tracks]);
 
   useEffect(() => {
     if (!selectedClipId) {
+      selectedClipIdRef.current = selectedClipId;
       return;
     }
 
     if (!findClipById(tracks, selectedClipId)) {
       setSelectedClipId(null);
+      selectedClipIdRef.current = null;
+      return;
     }
+
+    selectedClipIdRef.current = selectedClipId;
   }, [tracks, selectedClipId]);
 
   useEffect(() => {
@@ -495,6 +577,19 @@ export function App() {
   const secondsPerBar = (60 / bpm) * 4;
   const playheadBars = playheadSeconds / secondsPerBar;
 
+  const seekTransport = (nextBarPosition: number) => {
+    const safeSongBars = Math.max(1, songBarsRef.current);
+    const clampedBars = Math.max(0, Math.min(safeSongBars, nextBarPosition));
+    const nextSeconds = clampedBars * secondsPerBar;
+    const totalSongSteps = Math.max(16, safeSongBars * 16);
+    const nextStep = ((Math.floor(clampedBars * 16) % totalSongSteps) + totalSongSteps) % totalSongSteps;
+
+    setPlayheadSeconds(nextSeconds);
+    setActiveStep(nextStep % 16);
+    songStepRef.current = nextStep;
+    sequencerRef.current?.setStepIndex(nextStep % 16);
+  };
+
   useEffect(() => {
     if (!sequencerRef.current || !synthRef.current) {
       return;
@@ -532,6 +627,50 @@ export function App() {
     };
   }, []);
 
+  useEffect(() => {
+    const isEditableTarget = (target: EventTarget | null): boolean => {
+      if (!(target instanceof HTMLElement)) {
+        return false;
+      }
+
+      const tagName = target.tagName;
+      return (
+        target.isContentEditable ||
+        tagName === "INPUT" ||
+        tagName === "TEXTAREA" ||
+        tagName === "SELECT"
+      );
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if ((!event.ctrlKey && !event.metaKey) || isEditableTarget(event.target)) {
+        return;
+      }
+
+      const key = event.key.toLowerCase();
+      if (key === "z") {
+        event.preventDefault();
+        if (event.shiftKey) {
+          redo();
+          return;
+        }
+
+        undo();
+        return;
+      }
+
+      if (key === "y") {
+        event.preventDefault();
+        redo();
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [redo, undo]);
+
   const handlePlay = () => {
     syncAudioPlayback(true, playheadSeconds);
     setIsRunning(true);
@@ -543,6 +682,7 @@ export function App() {
   };
 
   const handleStop = () => {
+    resumeAfterScrubRef.current = false;
     syncAudioPlayback(false, 0);
     setIsRunning(false);
     setPlayheadSeconds(0);
@@ -552,7 +692,42 @@ export function App() {
     sequencerRef.current?.reset();
   };
 
+  const handleBeginScrub = () => {
+    resumeAfterScrubRef.current = isRunning;
+    if (isRunning) {
+      if (rafIdRef.current !== null) {
+        cancelAnimationFrame(rafIdRef.current);
+        rafIdRef.current = null;
+      }
+      lastTsRef.current = null;
+      sequencerRef.current?.stop();
+      syncAudioPlayback(false, playheadSeconds);
+      setIsRunning(false);
+    }
+  };
+
+  const handleScrubPlayhead = (barPosition: number) => {
+    seekTransport(barPosition);
+  };
+
+  const handleEndScrub = (barPosition: number) => {
+    seekTransport(barPosition);
+
+    if (!resumeAfterScrubRef.current) {
+      return;
+    }
+
+    resumeAfterScrubRef.current = false;
+    syncAudioPlayback(true, barPosition * secondsPerBar);
+    setIsRunning(true);
+  };
+
+  const handleBeginClipChange = () => {
+    pushHistoryState();
+  };
+
   const handleToggleStep = (rowIndex: number, stepIndex: number) => {
+    pushHistoryState();
     setPatterns((prev) =>
       prev.map((pattern) => {
         if (pattern.id !== selectedPatternId) return pattern;
@@ -568,6 +743,7 @@ export function App() {
     const source = patterns.find((pattern) => pattern.id === selectedPatternId);
     if (!source) return;
 
+    pushHistoryState();
     const nextId = `pattern-${idCounterRef.current++}`;
     const displayName = getPatternDisplayName(patterns.length);
     const clone: DrumPatternModel = {
@@ -620,10 +796,13 @@ export function App() {
     }
 
     const nextSongBars = snapshot.songBars ?? 16;
+    const nextPatterns =
+      snapshot.patterns && snapshot.patterns.length > 0 ? snapshot.patterns : createDefaultPatterns();
     const nextTracks = ensureTracks(snapshot.tracks ?? [], snapshot.bpm).map((track) => ({
       ...track,
       clips: track.clips.map((clip) => clampClipToSong(clip, nextSongBars))
     }));
+    const nextSelectedPatternId = snapshot.selectedPatternId ?? nextPatterns[0]?.id ?? "A";
 
     setIsRunning(false);
     syncAudioPlayback(false, 0);
@@ -632,13 +811,22 @@ export function App() {
     songStepRef.current = 0;
     sequencerRef.current?.stop();
     sequencerRef.current?.reset();
+    undoStackRef.current = [];
+    redoStackRef.current = [];
+    bpmRef.current = snapshot.bpm;
+    songBarsRef.current = nextSongBars;
+    patternsRef.current = nextPatterns;
+    tracksRef.current = nextTracks;
+    masterVolumeRef.current = clampVolume(snapshot.masterVolume ?? 1);
+    selectedPatternIdRef.current = nextSelectedPatternId;
+    selectedClipIdRef.current = null;
 
     setBpm(snapshot.bpm);
     setSongBars(nextSongBars);
-    setPatterns(snapshot.patterns && snapshot.patterns.length > 0 ? snapshot.patterns : createDefaultPatterns());
+    setPatterns(nextPatterns);
     setTracks(nextTracks);
     setMasterVolume(clampVolume(snapshot.masterVolume ?? 1));
-    setSelectedPatternId(snapshot.selectedPatternId ?? snapshot.patterns?.[0]?.id ?? "A");
+    setSelectedPatternId(nextSelectedPatternId);
     setSelectedClipId(null);
     setStatus("Loaded");
   };
@@ -714,6 +902,7 @@ export function App() {
   };
 
   const handleDuplicateClip = (clipId: string) => {
+    pushHistoryState();
     const newId = `clip-${idCounterRef.current++}`;
 
     setTracks((prev) =>
@@ -748,6 +937,7 @@ export function App() {
   };
 
   const handleDeleteClip = (clipId: string) => {
+    pushHistoryState();
     setTracks((prev) =>
       prev.map((track) => ({
         ...track,
@@ -758,6 +948,12 @@ export function App() {
   };
 
   const handleSetClipPattern = (clipId: string, patternId: string) => {
+    const clip = findClipById(tracks, clipId);
+    if (!clip || !isDrumClip(clip) || clip.patternId === patternId) {
+      return;
+    }
+
+    pushHistoryState();
     setTracks((prev) =>
       prev.map((track) => ({
         ...track,
@@ -769,28 +965,29 @@ export function App() {
   };
 
   const handleSetClipTrack = (clipId: string, targetTrackId: string) => {
+    let sourceTrackId: string | null = null;
+    let clipToMove: TrackClipModel | null = null;
+
+    for (const track of tracks) {
+      const clip = track.clips.find((candidate) => candidate.id === clipId);
+      if (clip) {
+        sourceTrackId = track.id;
+        clipToMove = clip;
+        break;
+      }
+    }
+
+    if (!sourceTrackId || !clipToMove || sourceTrackId === targetTrackId) {
+      return;
+    }
+
+    const targetTrack = tracks.find((track) => track.id === targetTrackId);
+    if (!targetTrack || targetTrack.type !== clipToMove.kind) {
+      return;
+    }
+
+    pushHistoryState();
     setTracks((prev) => {
-      let sourceTrackId: string | null = null;
-      let clipToMove: TrackClipModel | null = null;
-
-      for (const track of prev) {
-        const clip = track.clips.find((candidate) => candidate.id === clipId);
-        if (clip) {
-          sourceTrackId = track.id;
-          clipToMove = clip;
-          break;
-        }
-      }
-
-      if (!sourceTrackId || !clipToMove || sourceTrackId === targetTrackId) {
-        return prev;
-      }
-
-      const targetTrack = prev.find((track) => track.id === targetTrackId);
-      if (!targetTrack || targetTrack.type !== clipToMove.kind) {
-        return prev;
-      }
-
       return prev.map((track) => {
         if (track.id === sourceTrackId) {
           return {
@@ -958,6 +1155,7 @@ export function App() {
       return;
     }
 
+    pushHistoryState();
     const shouldResetSelection = trackToDelete.clips.some((clip) => clip.id === selectedClipId);
     synthRef.current?.removeTrack(trackId);
     for (const clip of trackToDelete.clips) {
@@ -1050,6 +1248,7 @@ export function App() {
         onBpmChange={setBpm}
         songBars={songBars}
         onSongBarsChange={handleSongBarsChange}
+        onUndo={undo}
         onSave={handleSave}
         onLoad={handleLoad}
         status={status}
@@ -1070,6 +1269,7 @@ export function App() {
       />
       <Timeline
         bpm={bpm}
+        isRunning={isRunning}
         playheadBars={playheadBars}
         songBars={songBars}
         tracks={tracks.map((track) => ({
@@ -1099,18 +1299,24 @@ export function App() {
         activeClipIds={activeClipIds}
         selectedClipId={selectedClipId}
         onSelectClip={(clipId) => {
+          selectedClipIdRef.current = clipId;
           setSelectedClipId(clipId);
           const clip = findClipById(tracks, clipId);
           if (clip && isDrumClip(clip)) {
+            selectedPatternIdRef.current = clip.patternId;
             setSelectedPatternId(clip.patternId);
           }
         }}
+        onBeginClipChange={handleBeginClipChange}
         onMoveClip={handleMoveClip}
         onResizeClip={handleResizeClip}
         onDuplicateClip={handleDuplicateClip}
         onDeleteClip={handleDeleteClip}
         onChangeClipPattern={handleSetClipPattern}
         onChangeClipTrack={handleSetClipTrack}
+        onBeginScrub={handleBeginScrub}
+        onScrubPlayhead={handleScrubPlayhead}
+        onEndScrub={handleEndScrub}
         patternOptions={patterns.map((pattern, index) => ({
           id: pattern.id,
           name: getPatternDisplayName(index)
@@ -1134,7 +1340,10 @@ export function App() {
         onToggleStep={handleToggleStep}
         activeStep={isRunning ? activeStep : -1}
         selectedPatternId={selectedPatternId}
-        onSelectPattern={(patternId) => setSelectedPatternId(patternId as DrumPatternId)}
+        onSelectPattern={(patternId) => {
+          selectedPatternIdRef.current = patternId as DrumPatternId;
+          setSelectedPatternId(patternId as DrumPatternId);
+        }}
         onClonePattern={handleClonePattern}
       />
     </div>
