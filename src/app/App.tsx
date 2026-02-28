@@ -77,6 +77,8 @@ const getPatternDisplayName = (index: number) => String.fromCharCode(65 + index)
 
 const isDrumClip = (clip: TrackClipModel): clip is DrumClipModel => clip.kind === "drum";
 
+const isAudioClip = (clip: TrackClipModel): clip is AudioClipModel => clip.kind === "audio";
+
 const clampVolume = (value: number): number => Math.min(1, Math.max(0, value));
 
 const getClipEndBar = (clip: TrackClipModel): number => clip.startBar + clip.lengthBars;
@@ -192,6 +194,14 @@ const findClipById = (tracks: TrackModel[], clipId: string): TrackClipModel | nu
   return null;
 };
 
+const getLoopedSeconds = (playhead: number, songLength: number): number => {
+  if (!Number.isFinite(playhead) || songLength <= 0) {
+    return 0;
+  }
+
+  return ((playhead % songLength) + songLength) % songLength;
+};
+
 export function App() {
   const [bpm, setBpm] = useState(120);
   const [isRunning, setIsRunning] = useState(false);
@@ -215,6 +225,7 @@ export function App() {
   const storeRef = useRef<LocalProjectStore | null>(null);
   const sequencerRef = useRef<StepSequencer | null>(null);
   const synthRef = useRef<DrumSynth | null>(null);
+  const audioElementsRef = useRef(new Map<string, HTMLAudioElement>());
   const songStepRef = useRef(0);
   const idCounterRef = useRef(4);
 
@@ -246,6 +257,112 @@ export function App() {
     masterVolumeRef.current = masterVolume;
     synthRef.current?.syncMixer(tracksRef.current, masterVolume);
   }, [masterVolume]);
+
+  const syncAudioPlayback = (running: boolean, nextPlayheadSeconds: number) => {
+    const audioElements = audioElementsRef.current;
+    const currentTracks = tracksRef.current;
+    const safeSongBars = Math.max(1, songBarsRef.current);
+    const songDurationSeconds = safeSongBars * secondsPerBar;
+    const loopedSeconds = getLoopedSeconds(nextPlayheadSeconds, songDurationSeconds);
+    const hasSolo = currentTracks.some((track) => track.solo);
+    const activeAudioClipIds = new Set<string>();
+
+    for (const track of currentTracks) {
+      if (track.type !== "audio") {
+        continue;
+      }
+
+      const isAudible = hasSolo ? track.solo : !track.muted;
+      const trackVolume = isAudible ? clampVolume(track.volume) * masterVolumeRef.current : 0;
+
+      for (const clip of track.clips) {
+        if (!isAudioClip(clip) || !clip.audioDataUrl) {
+          continue;
+        }
+
+        let element = audioElements.get(clip.id);
+        if (!element) {
+          element = new Audio(clip.audioDataUrl);
+          element.preload = "auto";
+          element.loop = false;
+          audioElements.set(clip.id, element);
+        } else if (element.src !== clip.audioDataUrl) {
+          element.pause();
+          element.src = clip.audioDataUrl;
+          element.load();
+        }
+
+        const clipStartSeconds = clip.startBar * secondsPerBar;
+        const clipDurationSeconds = clip.lengthBars * secondsPerBar;
+        const clipOffsetSeconds = loopedSeconds - clipStartSeconds;
+        const isActive =
+          running &&
+          trackVolume > 0 &&
+          clipOffsetSeconds >= 0 &&
+          clipOffsetSeconds < clipDurationSeconds;
+
+        if (isActive) {
+          activeAudioClipIds.add(clip.id);
+          element.volume = clampVolume(trackVolume);
+
+          const targetTime = Math.max(0, clipOffsetSeconds);
+          const maxSeekTime =
+            Number.isFinite(element.duration) && element.duration > 0
+              ? Math.max(0, element.duration - 0.05)
+              : targetTime;
+          const clampedTime = Math.min(targetTime, maxSeekTime);
+          const drift = Math.abs(element.currentTime - clampedTime);
+
+          if (drift > 0.18) {
+            try {
+              element.currentTime = clampedTime;
+            } catch {
+              // Ignore seek failures before metadata is ready.
+            }
+          }
+
+          if (element.paused) {
+            void element.play().catch(() => {
+              setStatus("Audio playback blocked");
+            });
+          }
+          continue;
+        }
+
+        if (!element.paused) {
+          element.pause();
+        }
+
+        const shouldReset = !running || loopedSeconds < clipStartSeconds || clipOffsetSeconds >= clipDurationSeconds;
+        if (shouldReset && element.currentTime !== 0) {
+          try {
+            element.currentTime = 0;
+          } catch {
+            // Ignore seek failures before metadata is ready.
+          }
+        }
+      }
+    }
+
+    for (const track of currentTracks) {
+      for (const clip of track.clips) {
+        if (isAudioClip(clip) && clip.audioDataUrl) {
+          activeAudioClipIds.add(clip.id);
+        }
+      }
+    }
+
+    for (const [clipId, element] of audioElements.entries()) {
+      if (activeAudioClipIds.has(clipId)) {
+        continue;
+      }
+
+      element.pause();
+      element.removeAttribute("src");
+      element.load();
+      audioElements.delete(clipId);
+    }
+  };
 
   useEffect(() => {
     idCounterRef.current = Math.max(idCounterRef.current, getNextIdSeed(patterns, tracks));
@@ -368,13 +485,33 @@ export function App() {
     }
   }, [isRunning, songBars, bpm]);
 
-  const handlePlay = () => setIsRunning(true);
+  useEffect(() => {
+    syncAudioPlayback(isRunning, playheadSeconds);
+  }, [isRunning, playheadSeconds, tracks, masterVolume, songBars, bpm]);
+
+  useEffect(() => {
+    return () => {
+      for (const element of audioElementsRef.current.values()) {
+        element.pause();
+        element.removeAttribute("src");
+        element.load();
+      }
+      audioElementsRef.current.clear();
+    };
+  }, []);
+
+  const handlePlay = () => {
+    syncAudioPlayback(true, playheadSeconds);
+    setIsRunning(true);
+  };
 
   const handlePause = () => {
+    syncAudioPlayback(false, playheadSeconds);
     setIsRunning(false);
   };
 
   const handleStop = () => {
+    syncAudioPlayback(false, 0);
     setIsRunning(false);
     setPlayheadSeconds(0);
     setActiveStep(0);
@@ -457,6 +594,7 @@ export function App() {
     }));
 
     setIsRunning(false);
+    syncAudioPlayback(false, 0);
     setPlayheadSeconds(0);
     setActiveStep(0);
     songStepRef.current = 0;
@@ -776,6 +914,21 @@ export function App() {
 
     const shouldResetSelection = trackToDelete.clips.some((clip) => clip.id === selectedClipId);
     synthRef.current?.removeTrack(trackId);
+    for (const clip of trackToDelete.clips) {
+      if (!isAudioClip(clip)) {
+        continue;
+      }
+
+      const element = audioElementsRef.current.get(clip.id);
+      if (!element) {
+        continue;
+      }
+
+      element.pause();
+      element.removeAttribute("src");
+      element.load();
+      audioElementsRef.current.delete(clip.id);
+    }
     const remainingTracks = tracks.filter((track) => track.id !== trackId);
     const nextTracks =
       remainingTracks.length > 0
@@ -799,12 +952,43 @@ export function App() {
   };
 
   const loopedBars = playheadBars % songBars;
-  const activeClips = isRunning
-    ? tracks
-        .map((track) => getActiveDrumClip(track, loopedBars))
-        .filter((clip): clip is DrumClipModel => clip !== null)
+  const loopedSeconds = getLoopedSeconds(playheadSeconds, Math.max(1, songBars) * secondsPerBar);
+  const hasSolo = tracks.some((track) => track.solo);
+  const activeClipIds = isRunning
+    ? tracks.flatMap((track) => {
+        const clipIds: string[] = [];
+
+        if (track.type === "drum") {
+          const activeDrumClip = getActiveDrumClip(track, loopedBars);
+          if (activeDrumClip) {
+            clipIds.push(activeDrumClip.id);
+          }
+          return clipIds;
+        }
+
+        const isAudible = hasSolo ? track.solo : !track.muted;
+        if (!isAudible) {
+          return clipIds;
+        }
+
+        for (const clip of track.clips) {
+          if (!isAudioClip(clip) || !clip.audioDataUrl) {
+            continue;
+          }
+
+          const clipStartSeconds = clip.startBar * secondsPerBar;
+          const clipDurationSeconds = clip.lengthBars * secondsPerBar;
+          if (
+            loopedSeconds >= clipStartSeconds &&
+            loopedSeconds < clipStartSeconds + clipDurationSeconds
+          ) {
+            clipIds.push(clip.id);
+          }
+        }
+
+        return clipIds;
+      })
     : [];
-  const activeClipIds = activeClips.map((clip) => clip.id);
 
   return (
     <div className="app-root">
