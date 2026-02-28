@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import "./timeline.css";
+import type { AutomationPointModel } from "../../../model/types";
+import { AutomationLane } from "./AutomationLane";
 import { Clip } from "./Clip";
 import { Grid } from "./Grid";
 
@@ -17,6 +19,7 @@ type TimelineTrack = {
   id: string;
   name: string;
   type: "drum" | "audio";
+  automationPoints: AutomationPointModel[];
   clips: TimelineClip[];
 };
 
@@ -30,6 +33,10 @@ type TimelineProps = {
   tracks: TimelineTrack[];
   activeClipIds: string[];
   selectedClipId: string | null;
+  onAddAutomationPoint: (trackId: string, bar: number, value: number) => void;
+  onBeginAutomationChange: () => void;
+  onDeleteAutomationPoint: (trackId: string, pointId: string) => void;
+  onMoveAutomationPoint: (trackId: string, pointId: string, bar: number, value: number) => void;
   onSelectClip: (clipId: string) => void;
   onBeginClipChange: () => void;
   onMoveClip: (clipId: string, startBar: number) => void;
@@ -58,6 +65,10 @@ export function Timeline({
   tracks,
   activeClipIds,
   selectedClipId,
+  onAddAutomationPoint,
+  onBeginAutomationChange,
+  onDeleteAutomationPoint,
+  onMoveAutomationPoint,
   onSelectClip,
   onBeginClipChange,
   onMoveClip,
@@ -188,56 +199,71 @@ export function Timeline({
                 <strong>{track.name}</strong>
                 <span>{track.type}</span>
               </div>
-              <div
-                className="timeline__track"
-                style={{ width: laneWidth, ["--bar-width" as string]: `${barWidth}px` }}
-              >
-                <Grid bars={safeBars} resolution={gridResolution} />
-                {track.clips.map((clip) => (
-                  <Clip
-                    key={clip.id}
-                    kind={clip.kind}
-                    label={clip.label}
-                    startBars={clip.startBar}
-                    lengthBars={clip.lengthBars}
-                    durationBars={safeBars}
-                    gridResolution={gridResolution}
-                    snapEnabled={snapEnabled}
-                    isActive={activeClipIds.includes(clip.id)}
-                    isSelected={clip.id === selectedClipId}
-                    trackWidth={laneWidth}
-                    trackId={clip.trackId}
-                    trackOptions={trackOptions
-                      .filter((option) => option.type === clip.kind)
-                      .map((option) => ({ id: option.id, name: option.name }))}
-                    onSelect={() => onSelectClip(clip.id)}
-                    onBeginChange={onBeginClipChange}
-                    onMove={(startBar) => onMoveClip(clip.id, startBar)}
-                    onResize={(startBar, lengthBars) => onResizeClip(clip.id, startBar, lengthBars)}
-                    onDuplicate={() => onDuplicateClip(clip.id)}
-                    onDelete={() => onDeleteClip(clip.id)}
-                    patternId={clip.patternId}
-                    patternOptions={patternOptions}
-                    onChangePattern={
-                      clip.patternId
-                        ? (patternId) => onChangeClipPattern(clip.id, patternId)
-                        : undefined
-                    }
-                    onChangeTrack={(trackId) => onChangeClipTrack(clip.id, trackId)}
-                  />
-                ))}
-                {track.clips.length === 0 ? (
-                  <div className="timeline__empty">No clips on this track</div>
-                ) : null}
+              <div className="timeline__lane-stack" style={{ width: laneWidth }}>
                 <div
-                  className={`timeline__playhead-hitbox ${isRunning ? "is-running" : ""}`}
-                  style={{ left: `${playheadPercent}%` }}
-                  onPointerDown={handlePlayheadPointerDown}
-                  onPointerMove={handlePlayheadPointerMove}
-                  onPointerUp={handlePlayheadPointerUp}
-                  onPointerCancel={handlePlayheadPointerUp}
+                  className="timeline__track"
+                  style={{ width: "100%", ["--bar-width" as string]: `${barWidth}px` }}
+                >
+                  <Grid bars={safeBars} resolution={gridResolution} />
+                  {track.clips.map((clip) => (
+                    <Clip
+                      key={clip.id}
+                      kind={clip.kind}
+                      label={clip.label}
+                      startBars={clip.startBar}
+                      lengthBars={clip.lengthBars}
+                      durationBars={safeBars}
+                      gridResolution={gridResolution}
+                      snapEnabled={snapEnabled}
+                      isActive={activeClipIds.includes(clip.id)}
+                      isSelected={clip.id === selectedClipId}
+                      trackWidth={laneWidth}
+                      trackId={clip.trackId}
+                      trackOptions={trackOptions
+                        .filter((option) => option.type === clip.kind)
+                        .map((option) => ({ id: option.id, name: option.name }))}
+                      onSelect={() => onSelectClip(clip.id)}
+                      onBeginChange={onBeginClipChange}
+                      onMove={(startBar) => onMoveClip(clip.id, startBar)}
+                      onResize={(startBar, lengthBars) => onResizeClip(clip.id, startBar, lengthBars)}
+                      onDuplicate={() => onDuplicateClip(clip.id)}
+                      onDelete={() => onDeleteClip(clip.id)}
+                      patternId={clip.patternId}
+                      patternOptions={patternOptions}
+                      onChangePattern={
+                        clip.patternId
+                          ? (patternId) => onChangeClipPattern(clip.id, patternId)
+                          : undefined
+                      }
+                      onChangeTrack={(trackId) => onChangeClipTrack(clip.id, trackId)}
+                    />
+                  ))}
+                  {track.clips.length === 0 ? (
+                    <div className="timeline__empty">No clips on this track</div>
+                  ) : null}
+                  <div
+                    className={`timeline__playhead-hitbox ${isRunning ? "is-running" : ""}`}
+                    style={{ left: `${playheadPercent}%` }}
+                    onPointerDown={handlePlayheadPointerDown}
+                    onPointerMove={handlePlayheadPointerMove}
+                    onPointerUp={handlePlayheadPointerUp}
+                    onPointerCancel={handlePlayheadPointerUp}
+                  />
+                  <div className="timeline__playhead" style={{ left: `${playheadPercent}%` }} />
+                </div>
+                <AutomationLane
+                  gridResolution={gridResolution}
+                  laneWidth={laneWidth}
+                  points={track.automationPoints}
+                  songBars={safeBars}
+                  snapEnabled={snapEnabled}
+                  onAddPoint={(bar, value) => onAddAutomationPoint(track.id, bar, value)}
+                  onBeginChange={onBeginAutomationChange}
+                  onDeletePoint={(pointId) => onDeleteAutomationPoint(track.id, pointId)}
+                  onMovePoint={(pointId, bar, value) =>
+                    onMoveAutomationPoint(track.id, pointId, bar, value)
+                  }
                 />
-                <div className="timeline__playhead" style={{ left: `${playheadPercent}%` }} />
               </div>
             </div>
           ))}

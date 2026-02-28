@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Renderer } from "../audio/Renderer";
 import { DrumSynth } from "../audio/DrumSynth";
 import type {
+  AutomationPointModel,
   AudioClipModel,
   DrumClipModel,
   DrumPatternModel,
@@ -54,6 +55,7 @@ const createTrack = (
   name: string,
   type: TrackType,
   clips: TrackClipModel[] = [],
+  automationPoints: AutomationPointModel[] = [],
   trackBpm = 120
 ): TrackModel => ({
   id,
@@ -63,6 +65,7 @@ const createTrack = (
   volume: 1,
   muted: false,
   solo: false,
+  automationPoints: [...automationPoints].sort((a, b) => a.bar - b.bar),
   clips: clips.map((clip) => ({ ...clip, trackId: id }))
 });
 
@@ -83,8 +86,8 @@ const createDefaultTracks = (): TrackModel[] => [
   createTrack("track-1", "Drums 1", "drum", [
     createDrumClip("clip-1", "track-1", 0, 4, "A"),
     createDrumClip("clip-3", "track-1", 8, 4, "A")
-  ], 120),
-  createTrack("track-2", "Drums 2", "drum", [createDrumClip("clip-2", "track-2", 4, 4, "B")], 120)
+  ], [], 120),
+  createTrack("track-2", "Drums 2", "drum", [createDrumClip("clip-2", "track-2", 4, 4, "B")], [], 120)
 ];
 
 const getPatternDisplayName = (index: number) => String.fromCharCode(65 + index);
@@ -94,6 +97,8 @@ const isDrumClip = (clip: TrackClipModel): clip is DrumClipModel => clip.kind ==
 const isAudioClip = (clip: TrackClipModel): clip is AudioClipModel => clip.kind === "audio";
 
 const clampVolume = (value: number): number => Math.min(1, Math.max(0, value));
+
+const clampAutomationValue = (value: number): number => Math.min(1, Math.max(0, value));
 
 const clampTrackBpm = (value: number, fallbackBpm: number): number => {
   if (!Number.isFinite(value)) {
@@ -105,6 +110,62 @@ const clampTrackBpm = (value: number, fallbackBpm: number): number => {
 const normalizeBarValue = (value: number): number => Math.round(value / MIN_GRID_RESOLUTION) * MIN_GRID_RESOLUTION;
 
 const roundBarPrecision = (value: number): number => Math.round(value * 1000) / 1000;
+
+const normalizeAutomationBar = (value: number): number =>
+  Math.round(Math.max(0, value) / MIN_GRID_RESOLUTION) * MIN_GRID_RESOLUTION;
+
+const sortAutomationPoints = (points: AutomationPointModel[]): AutomationPointModel[] =>
+  [...points].sort((a, b) => a.bar - b.bar);
+
+const clampAutomationBar = (
+  bar: number,
+  songBars: number,
+  snapStep: number | null = MIN_GRID_RESOLUTION
+): number => {
+  const normalizedBar = snapStep ? Math.round(bar / snapStep) * snapStep : roundBarPrecision(bar);
+  return Math.max(0, Math.min(songBars, normalizedBar));
+};
+
+const normalizeAutomationPoint = (
+  point: AutomationPointModel,
+  songBars: number,
+  snapStep: number | null = MIN_GRID_RESOLUTION
+): AutomationPointModel => ({
+  ...point,
+  bar: clampAutomationBar(point.bar, songBars, snapStep),
+  value: clampAutomationValue(point.value)
+});
+
+const getTrackVolumeAtBar = (track: TrackModel, barPosition: number): number => {
+  if (track.automationPoints.length === 0) {
+    return clampVolume(track.volume);
+  }
+
+  const points = sortAutomationPoints(track.automationPoints);
+  if (barPosition <= points[0].bar) {
+    return clampAutomationValue(points[0].value);
+  }
+
+  const lastPoint = points[points.length - 1];
+  if (barPosition >= lastPoint.bar) {
+    return clampAutomationValue(lastPoint.value);
+  }
+
+  for (let index = 0; index < points.length - 1; index += 1) {
+    const leftPoint = points[index];
+    const rightPoint = points[index + 1];
+    if (barPosition < leftPoint.bar || barPosition > rightPoint.bar) {
+      continue;
+    }
+
+    const range = Math.max(MIN_GRID_RESOLUTION, rightPoint.bar - leftPoint.bar);
+    const progress = (barPosition - leftPoint.bar) / range;
+    const interpolatedValue = leftPoint.value + (rightPoint.value - leftPoint.value) * progress;
+    return clampAutomationValue(interpolatedValue);
+  }
+
+  return clampVolume(track.volume);
+};
 
 const getTrackTempoRatio = (track: Pick<TrackModel, "bpm">, projectBpm: number): number =>
   clampTrackBpm(track.bpm, projectBpm) / Math.max(1, projectBpm);
@@ -197,6 +258,9 @@ const getNextIdSeed = (patterns: DrumPatternModel[], tracks: TrackModel[]): numb
 
   for (const track of tracks) {
     register(track.id);
+    for (const point of track.automationPoints) {
+      register(point.id);
+    }
     for (const clip of track.clips) {
       register(clip.id);
     }
@@ -211,11 +275,18 @@ const ensureTracks = (tracks: TrackModel[], fallbackBpm: number): TrackModel[] =
       ...track,
       bpm: clampTrackBpm(track.bpm, fallbackBpm),
       volume: clampVolume(track.volume),
+      automationPoints: sortAutomationPoints(
+        (track.automationPoints ?? []).map((point) => ({
+          ...point,
+          bar: normalizeAutomationBar(point.bar),
+          value: clampAutomationValue(point.value)
+        }))
+      ),
       clips: track.clips.map((clip) => ({ ...clip, trackId: track.id }))
     }));
   }
 
-  return [createTrack("track-1", "Drums 1", "drum", [], fallbackBpm)];
+  return [createTrack("track-1", "Drums 1", "drum", [], [], fallbackBpm)];
 };
 
 const getDefaultTrackName = (type: TrackType, index: number): string =>
@@ -296,6 +367,11 @@ export function App() {
 
   useEffect(() => {
     tracksRef.current = tracks;
+    if (isRunning) {
+      syncAutomationMixer(playheadSeconds);
+      return;
+    }
+
     synthRef.current?.syncMixer(tracks, masterVolumeRef.current);
   }, [tracks]);
 
@@ -305,6 +381,11 @@ export function App() {
 
   useEffect(() => {
     masterVolumeRef.current = masterVolume;
+    if (isRunning) {
+      syncAutomationMixer(playheadSeconds);
+      return;
+    }
+
     synthRef.current?.syncMixer(tracksRef.current, masterVolume);
   }, [masterVolume]);
 
@@ -314,6 +395,7 @@ export function App() {
     const safeSongBars = Math.max(1, songBarsRef.current);
     const songDurationSeconds = safeSongBars * secondsPerBar;
     const loopedSeconds = getLoopedSeconds(nextPlayheadSeconds, songDurationSeconds);
+    const loopedBars = loopedSeconds / secondsPerBar;
     const hasSolo = currentTracks.some((track) => track.solo);
     const activeAudioClipIds = new Set<string>();
 
@@ -323,7 +405,9 @@ export function App() {
       }
 
       const isAudible = hasSolo ? track.solo : !track.muted;
-      const trackVolume = isAudible ? clampVolume(track.volume) * masterVolumeRef.current : 0;
+      const trackVolume = isAudible
+        ? getTrackVolumeAtBar(track, loopedBars) * masterVolumeRef.current
+        : 0;
       const tempoRatio = getTrackTempoRatio(track, bpmRef.current);
 
       for (const clip of track.clips) {
@@ -414,6 +498,19 @@ export function App() {
       element.load();
       audioElements.delete(clipId);
     }
+  };
+
+  const syncAutomationMixer = (nextPlayheadSeconds: number) => {
+    const currentTracks = tracksRef.current;
+    const safeSongBars = Math.max(1, songBarsRef.current);
+    const songDurationSeconds = safeSongBars * secondsPerBar;
+    const loopedBars = getLoopedSeconds(nextPlayheadSeconds, songDurationSeconds) / secondsPerBar;
+    const adjustedTracks = currentTracks.map((track) => ({
+      ...track,
+      volume: getTrackVolumeAtBar(track, loopedBars)
+    }));
+
+    synthRef.current?.syncMixer(adjustedTracks, masterVolumeRef.current);
   };
 
   const cloneHistorySnapshot = (snapshot: HistorySnapshot): HistorySnapshot => structuredClone(snapshot);
@@ -619,7 +716,7 @@ export function App() {
       setActiveStep(nextStep % 16);
 
       synthRef.current.ensureContext();
-      synthRef.current.syncMixer(tracksRef.current, masterVolumeRef.current);
+      syncAutomationMixer(playheadSeconds);
 
       sequencerRef.current.setStepIndex(nextStep % 16);
       sequencerRef.current.setBpm(bpm);
@@ -631,6 +728,7 @@ export function App() {
 
   useEffect(() => {
     syncAudioPlayback(isRunning, playheadSeconds);
+    syncAutomationMixer(playheadSeconds);
   }, [isRunning, playheadSeconds, tracks, masterVolume, songBars, bpm]);
 
   useEffect(() => {
@@ -741,6 +839,74 @@ export function App() {
 
   const handleBeginClipChange = () => {
     pushHistoryState();
+  };
+
+  const handleBeginAutomationChange = () => {
+    pushHistoryState();
+  };
+
+  const handleAddAutomationPoint = (trackId: string, bar: number, value: number) => {
+    pushHistoryState();
+    const activeSnapStep = snapEnabled ? gridResolution : null;
+    const nextPoint = normalizeAutomationPoint(
+      {
+        id: `automation-${idCounterRef.current++}`,
+        bar,
+        value
+      },
+      songBars,
+      activeSnapStep
+    );
+
+    setTracks((prev) =>
+      prev.map((track) =>
+        track.id === trackId
+          ? {
+              ...track,
+              automationPoints: sortAutomationPoints([...track.automationPoints, nextPoint])
+            }
+          : track
+      )
+    );
+  };
+
+  const handleMoveAutomationPoint = (
+    trackId: string,
+    pointId: string,
+    bar: number,
+    value: number
+  ) => {
+    const activeSnapStep = snapEnabled ? gridResolution : null;
+    setTracks((prev) =>
+      prev.map((track) =>
+        track.id === trackId
+          ? {
+              ...track,
+              automationPoints: sortAutomationPoints(
+                track.automationPoints.map((point) =>
+                  point.id === pointId
+                    ? normalizeAutomationPoint({ ...point, bar, value }, songBars, activeSnapStep)
+                    : point
+                )
+              )
+            }
+          : track
+      )
+    );
+  };
+
+  const handleDeleteAutomationPoint = (trackId: string, pointId: string) => {
+    pushHistoryState();
+    setTracks((prev) =>
+      prev.map((track) =>
+        track.id === trackId
+          ? {
+              ...track,
+              automationPoints: track.automationPoints.filter((point) => point.id !== pointId)
+            }
+          : track
+      )
+    );
   };
 
   const handleToggleStep = (rowIndex: number, stepIndex: number) => {
@@ -888,6 +1054,11 @@ export function App() {
     setTracks((prev) =>
       prev.map((track) => ({
         ...track,
+        automationPoints: sortAutomationPoints(
+          track.automationPoints.map((point) =>
+            normalizeAutomationPoint(point, nextBars, activeSnapStep)
+          )
+        ),
         clips: track.clips.map((clip) => {
           const minLength = activeSnapStep ?? MIN_GRID_RESOLUTION;
           const maxStart = Math.max(0, nextBars - minLength);
@@ -1071,7 +1242,7 @@ export function App() {
 
     setTracks((prev) => {
       const trackNumber = prev.filter((track) => track.type === type).length + 1;
-      return [...prev, createTrack(nextId, getDefaultTrackName(type, trackNumber), type, [], bpm)];
+      return [...prev, createTrack(nextId, getDefaultTrackName(type, trackNumber), type, [], [], bpm)];
     });
   };
 
@@ -1128,6 +1299,7 @@ export function App() {
         nextTrackId,
         getDefaultTrackName("audio", trackNumber),
         "audio",
+        [],
         [],
         bpmRef.current
       );
@@ -1208,6 +1380,7 @@ export function App() {
               `track-${idCounterRef.current++}`,
               getDefaultTrackName(trackToDelete.type, 1),
               trackToDelete.type,
+              [],
               [],
               trackToDelete.bpm
             )
@@ -1308,6 +1481,7 @@ export function App() {
           id: track.id,
           name: track.name,
           type: track.type,
+          automationPoints: [...track.automationPoints],
           clips: [...track.clips]
             .sort((a, b) => a.startBar - b.startBar)
             .map((clip) => ({
@@ -1330,6 +1504,10 @@ export function App() {
         }))}
         activeClipIds={activeClipIds}
         selectedClipId={selectedClipId}
+        onAddAutomationPoint={handleAddAutomationPoint}
+        onBeginAutomationChange={handleBeginAutomationChange}
+        onDeleteAutomationPoint={handleDeleteAutomationPoint}
+        onMoveAutomationPoint={handleMoveAutomationPoint}
         onSelectClip={(clipId) => {
           selectedClipIdRef.current = clipId;
           setSelectedClipId(clipId);

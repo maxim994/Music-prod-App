@@ -21,6 +21,12 @@ export interface AudioClipModel extends BaseClipModel {
 
 export type TrackClipModel = DrumClipModel | AudioClipModel;
 
+export interface AutomationPointModel {
+  id: string;
+  bar: number;
+  value: number;
+}
+
 export interface TrackModel {
   id: string;
   name: string;
@@ -29,6 +35,7 @@ export interface TrackModel {
   volume: number;
   muted: boolean;
   solo: boolean;
+  automationPoints: AutomationPointModel[];
   clips: TrackClipModel[];
 }
 

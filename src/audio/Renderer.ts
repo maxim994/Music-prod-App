@@ -1,4 +1,10 @@
-import type { DrumClipModel, DrumPattern, TrackModel } from "../model/types";
+import type {
+  AudioClipModel,
+  AutomationPointModel,
+  DrumClipModel,
+  DrumPattern,
+  TrackModel
+} from "../model/types";
 import { encodeWav } from "./utils/wav";
 
 type RenderOptions = {
@@ -20,6 +26,7 @@ type ArrangementOptions = {
 };
 
 const clampVolume = (value: number): number => Math.min(1, Math.max(0, value));
+const MIN_AUTOMATION_STEP = 1 / 16;
 
 const clampTrackBpm = (value: number, fallbackBpm: number): number => {
   if (!Number.isFinite(value)) {
@@ -40,8 +47,48 @@ const getTrackAudibleVolume = (
 };
 
 const isDrumClip = (clip: TrackModel["clips"][number]): clip is DrumClipModel => clip.kind === "drum";
+const isAudioClip = (clip: TrackModel["clips"][number]): clip is AudioClipModel => clip.kind === "audio";
 
-// Offline renderer/export (drum pattern only).
+const sortAutomationPoints = (points: AutomationPointModel[]): AutomationPointModel[] =>
+  [...points].sort((left, right) => left.bar - right.bar);
+
+const getTrackAutomationValueAtBar = (
+  track: Pick<TrackModel, "volume" | "automationPoints">,
+  barPosition: number
+): number => {
+  if (track.automationPoints.length === 0) {
+    return clampVolume(track.volume);
+  }
+
+  const points = sortAutomationPoints(track.automationPoints);
+  if (barPosition <= points[0].bar) {
+    return clampVolume(points[0].value);
+  }
+
+  const lastPoint = points[points.length - 1];
+  if (barPosition >= lastPoint.bar) {
+    return clampVolume(lastPoint.value);
+  }
+
+  for (let index = 0; index < points.length - 1; index += 1) {
+    const leftPoint = points[index];
+    const rightPoint = points[index + 1];
+    if (barPosition < leftPoint.bar || barPosition > rightPoint.bar) {
+      continue;
+    }
+
+    const range = Math.max(MIN_AUTOMATION_STEP, rightPoint.bar - leftPoint.bar);
+    const progress = (barPosition - leftPoint.bar) / range;
+    return clampVolume(leftPoint.value + (rightPoint.value - leftPoint.value) * progress);
+  }
+
+  return clampVolume(track.volume);
+};
+
+const isTrackAudible = (track: Pick<TrackModel, "muted" | "solo">, hasSolo: boolean): boolean =>
+  hasSolo ? track.solo : !track.muted;
+
+// Offline renderer/export.
 export class Renderer {
   static async renderDrumPatternToWav(options: RenderOptions): Promise<Blob> {
     const stepsPerBar = 16;
@@ -102,24 +149,25 @@ export class Renderer {
     const trackOutputs = new Map<string, GainNode>();
     for (const track of options.tracks) {
       const gainNode = offline.createGain();
-      gainNode.gain.value = getTrackAudibleVolume(track, hasSolo);
       gainNode.connect(masterGain);
+      Renderer.scheduleTrackAutomation(gainNode, track, hasSolo, durationSeconds, options.bpm);
       trackOutputs.set(track.id, gainNode);
     }
 
     const safeSongBars = Math.max(1, options.songBars);
+    const audioBufferCache = new Map<string, AudioBuffer>();
 
     for (let step = 0; step < totalSteps; step += 1) {
       const barIndex = Math.floor(step / stepsPerBar) % safeSongBars;
       const time = step * stepSeconds;
 
       for (const track of options.tracks) {
-        if (track.type !== "drum") {
+        if (track.type !== "drum" || !isTrackAudible(track, hasSolo)) {
           continue;
         }
 
         const output = trackOutputs.get(track.id);
-        if (!output || output.gain.value <= 0) {
+        if (!output) {
           continue;
         }
 
@@ -162,6 +210,54 @@ export class Renderer {
             Renderer.scheduleHat(offline, output, scheduledTime, noiseBuffer);
           }
         }
+      }
+    }
+
+    for (const track of options.tracks) {
+      if (track.type !== "audio" || !isTrackAudible(track, hasSolo)) {
+        continue;
+      }
+
+      const output = trackOutputs.get(track.id);
+      if (!output) {
+        continue;
+      }
+
+      const tempoRatio = getTrackTempoRatio(track, options.bpm);
+      const secondsPerBar = (60 / options.bpm) * 4;
+
+      for (const clip of track.clips) {
+        if (!isAudioClip(clip) || !clip.audioDataUrl) {
+          continue;
+        }
+
+        const clipStartSeconds = clip.startBar * secondsPerBar;
+        if (clipStartSeconds >= durationSeconds) {
+          continue;
+        }
+
+        let buffer = audioBufferCache.get(clip.audioDataUrl);
+        if (!buffer) {
+          buffer = await Renderer.decodeAudioDataUrl(offline, clip.audioDataUrl);
+          audioBufferCache.set(clip.audioDataUrl, buffer);
+        }
+
+        const source = offline.createBufferSource();
+        source.buffer = buffer;
+        source.playbackRate.setValueAtTime(Math.max(0.01, tempoRatio), 0);
+        source.connect(output);
+
+        const clipWindowSeconds = Math.max(0, Math.min(clip.lengthBars * secondsPerBar, durationSeconds - clipStartSeconds));
+        if (clipWindowSeconds <= 0) {
+          continue;
+        }
+
+        const sourceDuration = Math.min(buffer.duration, clipWindowSeconds * tempoRatio);
+        if (sourceDuration <= 0) {
+          continue;
+        }
+
+        source.start(clipStartSeconds, 0, sourceDuration);
       }
     }
 
@@ -257,5 +353,79 @@ export class Renderer {
       data[i] = Math.random() * 2 - 1;
     }
     return buffer;
+  }
+
+  private static scheduleTrackAutomation(
+    output: GainNode,
+    track: TrackModel,
+    hasSolo: boolean,
+    durationSeconds: number,
+    bpm: number
+  ): void {
+    const gain = output.gain;
+    gain.cancelScheduledValues(0);
+
+    if (!isTrackAudible(track, hasSolo)) {
+      gain.setValueAtTime(0, 0);
+      return;
+    }
+
+    if (track.automationPoints.length === 0) {
+      gain.setValueAtTime(getTrackAudibleVolume(track, hasSolo), 0);
+      return;
+    }
+
+    const secondsPerBar = (60 / bpm) * 4;
+    const sortedPoints = sortAutomationPoints(track.automationPoints);
+    const firstValue = getTrackAutomationValueAtBar(track, 0);
+    const firstTime = Math.max(0, Math.min(durationSeconds, sortedPoints[0].bar * secondsPerBar));
+
+    gain.setValueAtTime(firstValue, 0);
+    if (firstTime > 0) {
+      gain.setValueAtTime(firstValue, firstTime);
+    }
+
+    for (let index = 0; index < sortedPoints.length - 1; index += 1) {
+      const currentPoint = sortedPoints[index];
+      const nextPoint = sortedPoints[index + 1];
+      const currentTime = Math.max(0, Math.min(durationSeconds, currentPoint.bar * secondsPerBar));
+      const nextTime = Math.max(0, Math.min(durationSeconds, nextPoint.bar * secondsPerBar));
+      const currentValue = clampVolume(currentPoint.value);
+      const nextValue = clampVolume(nextPoint.value);
+
+      gain.setValueAtTime(currentValue, currentTime);
+      if (nextTime > currentTime) {
+        gain.linearRampToValueAtTime(nextValue, nextTime);
+      } else {
+        gain.setValueAtTime(nextValue, currentTime);
+      }
+    }
+
+    const lastPoint = sortedPoints[sortedPoints.length - 1];
+    const lastTime = Math.max(0, Math.min(durationSeconds, lastPoint.bar * secondsPerBar));
+    const lastValue = clampVolume(lastPoint.value);
+    gain.setValueAtTime(lastValue, lastTime);
+    if (lastTime < durationSeconds) {
+      gain.setValueAtTime(lastValue, durationSeconds);
+    }
+  }
+
+  private static async decodeAudioDataUrl(
+    context: OfflineAudioContext,
+    audioDataUrl: string
+  ): Promise<AudioBuffer> {
+    const arrayBuffer = Renderer.dataUrlToArrayBuffer(audioDataUrl);
+    return context.decodeAudioData(arrayBuffer);
+  }
+
+  private static dataUrlToArrayBuffer(dataUrl: string): ArrayBuffer {
+    const separatorIndex = dataUrl.indexOf(",");
+    const encodedData = separatorIndex >= 0 ? dataUrl.slice(separatorIndex + 1) : dataUrl;
+    const binary = atob(encodedData);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) {
+      bytes[index] = binary.charCodeAt(index);
+    }
+    return bytes.buffer;
   }
 }

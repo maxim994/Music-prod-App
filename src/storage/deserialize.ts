@@ -1,4 +1,5 @@
 import type {
+  AutomationPointModel,
   DrumClipModel,
   DrumPatternModel,
   ProjectSnapshot,
@@ -27,6 +28,15 @@ const normalizeBars = (value: number): number => Math.max(0, Math.floor(value));
 
 const normalizeLength = (value: number): number => Math.max(1, Math.floor(value));
 
+const normalizeAutomationBar = (value: number): number => Math.max(0, Math.round(value * 16) / 16);
+
+const clampAutomationValue = (value: unknown): number => {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return 1;
+  }
+  return Math.min(1, Math.max(0, value));
+};
+
 const isPatternValid = (pattern: unknown): pattern is boolean[][] => {
   if (!Array.isArray(pattern) || pattern.length !== 3) {
     return false;
@@ -44,6 +54,23 @@ const isDrumClip = (clip: TrackClipModel): clip is DrumClipModel => clip.kind ==
 
 const isClipCompatible = (trackType: TrackType, clip: TrackClipModel): boolean =>
   (trackType === "drum" && clip.kind === "drum") || (trackType === "audio" && clip.kind === "audio");
+
+const parseAutomationPoint = (raw: unknown): AutomationPointModel | null => {
+  if (!raw || typeof raw !== "object") {
+    return null;
+  }
+
+  const candidate = raw as Record<string, unknown>;
+  if (typeof candidate.id !== "string" || typeof candidate.bar !== "number" || !Number.isFinite(candidate.bar)) {
+    return null;
+  }
+
+  return {
+    id: candidate.id,
+    bar: normalizeAutomationBar(candidate.bar),
+    value: clampAutomationValue(candidate.value)
+  };
+};
 
 const parseClip = (raw: unknown, fallbackTrackId: string): TrackClipModel | null => {
   if (!raw || typeof raw !== "object") {
@@ -125,6 +152,17 @@ const parseTracks = (raw: unknown, fallbackBpm: number): TrackModel[] => {
       }
     }
 
+    const automationPoints: AutomationPointModel[] = [];
+    if (Array.isArray(candidate.automationPoints)) {
+      for (const point of candidate.automationPoints) {
+        const parsedPoint = parseAutomationPoint(point);
+        if (parsedPoint) {
+          automationPoints.push(parsedPoint);
+        }
+      }
+      automationPoints.sort((a, b) => a.bar - b.bar);
+    }
+
     tracks.push({
       id: candidate.id,
       name: candidate.name,
@@ -133,6 +171,7 @@ const parseTracks = (raw: unknown, fallbackBpm: number): TrackModel[] => {
       volume: clampVolume(candidate.volume),
       muted: Boolean(candidate.muted),
       solo: Boolean(candidate.solo),
+      automationPoints,
       clips
     });
   }
@@ -169,6 +208,7 @@ const parseLegacyTracks = (raw: unknown, fallbackBpm: number): TrackModel[] => {
       volume: 1,
       muted: false,
       solo: false,
+      automationPoints: [],
       clips
     }
   ];

@@ -49,6 +49,11 @@
   min-width: max-content;
 }
 
+.timeline__lane-stack {
+  display: grid;
+  gap: 8px;
+}
+
 .timeline__lane-meta {
   width: 148px;
   min-width: 148px;
@@ -84,6 +89,60 @@
   background: rgba(255, 255, 255, 0.03);
   border: 1px solid rgba(255, 255, 255, 0.06);
   overflow: hidden;
+}
+
+.timeline__automation {
+  position: relative;
+  height: 56px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  overflow: hidden;
+  cursor: crosshair;
+}
+
+.timeline__automation-label {
+  position: absolute;
+  top: 6px;
+  left: 8px;
+  z-index: 1;
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: rgba(233, 237, 244, 0.42);
+  pointer-events: none;
+}
+
+.timeline__automation-curve {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.timeline__automation-line {
+  fill: none;
+  stroke: rgba(141, 226, 200, 0.78);
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
+.timeline__automation-point {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(141, 226, 200, 0.95);
+  background: #8de2c8;
+  box-shadow: 0 0 0 2px rgba(8, 15, 24, 0.65);
+  cursor: grab;
+  z-index: 2;
+}
+
+.timeline__automation-point:active {
+  cursor: grabbing;
 }
 
 .grid {

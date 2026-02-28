@@ -1,9 +1,10 @@
 type GridProps = {
   bars: number;
   resolution: number;
+  showLabels?: boolean;
 };
 
-export function Grid({ bars, resolution }: GridProps) {
+export function Grid({ bars, resolution, showLabels = true }: GridProps) {
   const safeResolution = Math.max(1 / 16, resolution);
   const unitsPerBar = Math.max(1, Math.round(1 / safeResolution));
   const totalColumns = Math.max(1, bars * unitsPerBar);
@@ -12,13 +13,15 @@ export function Grid({ bars, resolution }: GridProps) {
 
   return (
     <div className="grid" style={columnStyle}>
-      <div className="grid__labels" style={labelStyle}>
-        {Array.from({ length: bars }, (_, index) => (
-          <div key={`label-${index}`} className="grid__label">
-            {index + 1}
-          </div>
-        ))}
-      </div>
+      {showLabels ? (
+        <div className="grid__labels" style={labelStyle}>
+          {Array.from({ length: bars }, (_, index) => (
+            <div key={`label-${index}`} className="grid__label">
+              {index + 1}
+            </div>
+          ))}
+        </div>
+      ) : null}
       {Array.from({ length: totalColumns }, (_, index) => (
         <div
           key={index}
