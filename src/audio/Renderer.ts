@@ -21,6 +21,16 @@ type ArrangementOptions = {
 
 const clampVolume = (value: number): number => Math.min(1, Math.max(0, value));
 
+const clampTrackBpm = (value: number, fallbackBpm: number): number => {
+  if (!Number.isFinite(value)) {
+    return Math.max(30, Math.min(300, Math.round(fallbackBpm)));
+  }
+  return Math.max(30, Math.min(300, Math.round(value)));
+};
+
+const getTrackTempoRatio = (track: Pick<TrackModel, "bpm">, projectBpm: number): number =>
+  clampTrackBpm(track.bpm, projectBpm) / Math.max(1, projectBpm);
+
 const getTrackAudibleVolume = (
   track: Pick<TrackModel, "volume" | "muted" | "solo">,
   hasSolo: boolean
@@ -100,7 +110,6 @@ export class Renderer {
     const safeSongBars = Math.max(1, options.songBars);
 
     for (let step = 0; step < totalSteps; step += 1) {
-      const stepIndex = step % stepsPerBar;
       const barIndex = Math.floor(step / stepsPerBar) % safeSongBars;
       const time = step * stepSeconds;
 
@@ -131,14 +140,27 @@ export class Renderer {
           continue;
         }
 
-        if (pattern[0]?.[stepIndex]) {
-          Renderer.scheduleKick(offline, output, time);
-        }
-        if (pattern[1]?.[stepIndex]) {
-          Renderer.scheduleSnare(offline, output, time, noiseBuffer);
-        }
-        if (pattern[2]?.[stepIndex]) {
-          Renderer.scheduleHat(offline, output, time, noiseBuffer);
+        const tempoRatio = getTrackTempoRatio(track, options.bpm);
+        const localStartStep = step * tempoRatio;
+        const localEndStep = (step + 1) * tempoRatio;
+        const firstScheduledStep = Number.isInteger(localStartStep)
+          ? Math.floor(localStartStep)
+          : Math.ceil(localStartStep);
+
+        for (let localStep = firstScheduledStep; localStep < localEndStep; localStep += 1) {
+          const localStepIndex = ((localStep % stepsPerBar) + stepsPerBar) % stepsPerBar;
+          const offsetSeconds = ((localStep - localStartStep) / tempoRatio) * stepSeconds;
+          const scheduledTime = time + offsetSeconds;
+
+          if (pattern[0]?.[localStepIndex]) {
+            Renderer.scheduleKick(offline, output, scheduledTime);
+          }
+          if (pattern[1]?.[localStepIndex]) {
+            Renderer.scheduleSnare(offline, output, scheduledTime, noiseBuffer);
+          }
+          if (pattern[2]?.[localStepIndex]) {
+            Renderer.scheduleHat(offline, output, scheduledTime, noiseBuffer);
+          }
         }
       }
     }

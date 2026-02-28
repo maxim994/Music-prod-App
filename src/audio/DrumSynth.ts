@@ -64,11 +64,11 @@ export class DrumSynth {
     this.trackGains.delete(trackId);
   }
 
-  playKick(trackId: string): void {
+  playKick(trackId: string, timeOffsetSeconds = 0): void {
     const output = this.getTrackOutput(trackId);
     if (!output || !this.context) return;
     const ctx = this.context;
-    const now = ctx.currentTime;
+    const now = ctx.currentTime + Math.max(0, timeOffsetSeconds);
 
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
@@ -88,11 +88,11 @@ export class DrumSynth {
     osc.stop(now + 0.22);
   }
 
-  playSnare(trackId: string): void {
+  playSnare(trackId: string, timeOffsetSeconds = 0): void {
     const output = this.getTrackOutput(trackId);
     if (!output || !this.context) return;
     const ctx = this.context;
-    const now = ctx.currentTime;
+    const now = ctx.currentTime + Math.max(0, timeOffsetSeconds);
 
     const noise = ctx.createBufferSource();
     noise.buffer = this.createNoiseBuffer(0.2);
@@ -124,11 +124,11 @@ export class DrumSynth {
     tone.stop(now + 0.2);
   }
 
-  playHat(trackId: string): void {
+  playHat(trackId: string, timeOffsetSeconds = 0): void {
     const output = this.getTrackOutput(trackId);
     if (!output || !this.context) return;
     const ctx = this.context;
-    const now = ctx.currentTime;
+    const now = ctx.currentTime + Math.max(0, timeOffsetSeconds);
 
     const noise = ctx.createBufferSource();
     noise.buffer = this.createNoiseBuffer(0.08);

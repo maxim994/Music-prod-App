@@ -25,6 +25,7 @@ export interface TrackModel {
   id: string;
   name: string;
   type: TrackType;
+  bpm: number;
   volume: number;
   muted: boolean;
   solo: boolean;

@@ -41,11 +41,13 @@ const createTrack = (
   id: string,
   name: string,
   type: TrackType,
-  clips: TrackClipModel[] = []
+  clips: TrackClipModel[] = [],
+  trackBpm = 120
 ): TrackModel => ({
   id,
   name,
   type,
+  bpm: trackBpm,
   volume: 1,
   muted: false,
   solo: false,
@@ -69,8 +71,8 @@ const createDefaultTracks = (): TrackModel[] => [
   createTrack("track-1", "Drums 1", "drum", [
     createDrumClip("clip-1", "track-1", 0, 4, "A"),
     createDrumClip("clip-3", "track-1", 8, 4, "A")
-  ]),
-  createTrack("track-2", "Drums 2", "drum", [createDrumClip("clip-2", "track-2", 4, 4, "B")])
+  ], 120),
+  createTrack("track-2", "Drums 2", "drum", [createDrumClip("clip-2", "track-2", 4, 4, "B")], 120)
 ];
 
 const getPatternDisplayName = (index: number) => String.fromCharCode(65 + index);
@@ -80,6 +82,16 @@ const isDrumClip = (clip: TrackClipModel): clip is DrumClipModel => clip.kind ==
 const isAudioClip = (clip: TrackClipModel): clip is AudioClipModel => clip.kind === "audio";
 
 const clampVolume = (value: number): number => Math.min(1, Math.max(0, value));
+
+const clampTrackBpm = (value: number, fallbackBpm: number): number => {
+  if (!Number.isFinite(value)) {
+    return Math.max(30, Math.min(300, Math.round(fallbackBpm)));
+  }
+  return Math.max(30, Math.min(300, Math.round(value)));
+};
+
+const getTrackTempoRatio = (track: Pick<TrackModel, "bpm">, projectBpm: number): number =>
+  clampTrackBpm(track.bpm, projectBpm) / Math.max(1, projectBpm);
 
 const getClipEndBar = (clip: TrackClipModel): number => clip.startBar + clip.lengthBars;
 
@@ -169,16 +181,17 @@ const getNextIdSeed = (patterns: DrumPatternModel[], tracks: TrackModel[]): numb
   return maxValue;
 };
 
-const ensureTracks = (tracks: TrackModel[]): TrackModel[] => {
+const ensureTracks = (tracks: TrackModel[], fallbackBpm: number): TrackModel[] => {
   if (tracks.length > 0) {
     return tracks.map((track) => ({
       ...track,
+      bpm: clampTrackBpm(track.bpm, fallbackBpm),
       volume: clampVolume(track.volume),
       clips: track.clips.map((clip) => ({ ...clip, trackId: track.id }))
     }));
   }
 
-  return [createTrack("track-1", "Drums 1", "drum")];
+  return [createTrack("track-1", "Drums 1", "drum", [], fallbackBpm)];
 };
 
 const getDefaultTrackName = (type: TrackType, index: number): string =>
@@ -216,6 +229,7 @@ export function App() {
   const [selectedClipId, setSelectedClipId] = useState<string | null>("clip-1");
   const [activeStep, setActiveStep] = useState(0);
 
+  const bpmRef = useRef(bpm);
   const patternsRef = useRef(patterns);
   const tracksRef = useRef(tracks);
   const songBarsRef = useRef(songBars);
@@ -234,6 +248,7 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    bpmRef.current = bpm;
     sequencerRef.current?.setBpm(bpm);
   }, [bpm]);
 
@@ -274,6 +289,7 @@ export function App() {
 
       const isAudible = hasSolo ? track.solo : !track.muted;
       const trackVolume = isAudible ? clampVolume(track.volume) * masterVolumeRef.current : 0;
+      const tempoRatio = getTrackTempoRatio(track, bpmRef.current);
 
       for (const clip of track.clips) {
         if (!isAudioClip(clip) || !clip.audioDataUrl) {
@@ -304,8 +320,9 @@ export function App() {
         if (isActive) {
           activeAudioClipIds.add(clip.id);
           element.volume = clampVolume(trackVolume);
+          element.playbackRate = tempoRatio;
 
-          const targetTime = Math.max(0, clipOffsetSeconds);
+          const targetTime = Math.max(0, clipOffsetSeconds * tempoRatio);
           const maxSeekTime =
             Number.isFinite(element.duration) && element.duration > 0
               ? Math.max(0, element.duration - 0.05)
@@ -393,6 +410,8 @@ export function App() {
           const synth = synthRef.current;
           if (synth) {
             const patternMap = new Map(patternsRef.current.map((pattern) => [pattern.id, pattern.steps]));
+            const projectBpm = Math.max(1, bpmRef.current);
+            const projectStepSeconds = (60 / projectBpm) / 4;
 
             for (const track of tracksRef.current) {
               if (track.type !== "drum") {
@@ -409,9 +428,22 @@ export function App() {
                 continue;
               }
 
-              if (pattern[0]?.[stepIndex]) synth.playKick(track.id);
-              if (pattern[1]?.[stepIndex]) synth.playSnare(track.id);
-              if (pattern[2]?.[stepIndex]) synth.playHat(track.id);
+              const tempoRatio = getTrackTempoRatio(track, projectBpm);
+              const localStartStep = absoluteStep * tempoRatio;
+              const localEndStep = (absoluteStep + 1) * tempoRatio;
+              const firstScheduledStep = Number.isInteger(localStartStep)
+                ? Math.floor(localStartStep)
+                : Math.ceil(localStartStep);
+
+              for (let localStep = firstScheduledStep; localStep < localEndStep; localStep += 1) {
+                const localStepIndex = ((localStep % 16) + 16) % 16;
+                const offsetSeconds =
+                  ((localStep - localStartStep) / tempoRatio) * projectStepSeconds;
+
+                if (pattern[0]?.[localStepIndex]) synth.playKick(track.id, offsetSeconds);
+                if (pattern[1]?.[localStepIndex]) synth.playSnare(track.id, offsetSeconds);
+                if (pattern[2]?.[localStepIndex]) synth.playHat(track.id, offsetSeconds);
+              }
             }
           }
 
@@ -588,7 +620,7 @@ export function App() {
     }
 
     const nextSongBars = snapshot.songBars ?? 16;
-    const nextTracks = ensureTracks(snapshot.tracks ?? []).map((track) => ({
+    const nextTracks = ensureTracks(snapshot.tracks ?? [], snapshot.bpm).map((track) => ({
       ...track,
       clips: track.clips.map((clip) => clampClipToSong(clip, nextSongBars))
     }));
@@ -787,6 +819,14 @@ export function App() {
     );
   };
 
+  const handleTrackBpmChange = (trackId: string, nextTrackBpm: number) => {
+    setTracks((prev) =>
+      prev.map((track) =>
+        track.id === trackId ? { ...track, bpm: clampTrackBpm(nextTrackBpm, bpm) } : track
+      )
+    );
+  };
+
   const handleToggleTrackMute = (trackId: string) => {
     setTracks((prev) =>
       prev.map((track) =>
@@ -808,7 +848,7 @@ export function App() {
 
     setTracks((prev) => {
       const trackNumber = prev.filter((track) => track.type === type).length + 1;
-      return [...prev, createTrack(nextId, getDefaultTrackName(type, trackNumber), type)];
+      return [...prev, createTrack(nextId, getDefaultTrackName(type, trackNumber), type, [], bpm)];
     });
   };
 
@@ -861,7 +901,13 @@ export function App() {
     if (!audioTrack) {
       const nextTrackId = `track-${idCounterRef.current++}`;
       const trackNumber = nextTracks.filter((track) => track.type === "audio").length + 1;
-      audioTrack = createTrack(nextTrackId, getDefaultTrackName("audio", trackNumber), "audio");
+      audioTrack = createTrack(
+        nextTrackId,
+        getDefaultTrackName("audio", trackNumber),
+        "audio",
+        [],
+        bpmRef.current
+      );
       nextTracks.push(audioTrack);
     }
 
@@ -937,7 +983,9 @@ export function App() {
             createTrack(
               `track-${idCounterRef.current++}`,
               getDefaultTrackName(trackToDelete.type, 1),
-              trackToDelete.type
+              trackToDelete.type,
+              [],
+              trackToDelete.bpm
             )
           ];
 
@@ -1012,6 +1060,7 @@ export function App() {
         tracks={tracks}
         masterVolume={masterVolume}
         onTrackVolumeChange={handleTrackVolumeChange}
+        onTrackBpmChange={handleTrackBpmChange}
         onToggleTrackMute={handleToggleTrackMute}
         onToggleTrackSolo={handleToggleTrackSolo}
         onDeleteTrack={handleDeleteTrack}

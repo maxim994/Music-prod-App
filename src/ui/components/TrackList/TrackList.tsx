@@ -7,6 +7,7 @@ type TrackListProps = {
   tracks: TrackModel[];
   masterVolume: number;
   onTrackVolumeChange: (trackId: string, volume: number) => void;
+  onTrackBpmChange: (trackId: string, bpm: number) => void;
   onToggleTrackMute: (trackId: string) => void;
   onToggleTrackSolo: (trackId: string) => void;
   onDeleteTrack: (trackId: string) => void;
@@ -19,6 +20,7 @@ export function TrackList({
   tracks,
   masterVolume,
   onTrackVolumeChange,
+  onTrackBpmChange,
   onToggleTrackMute,
   onToggleTrackSolo,
   onDeleteTrack,
@@ -91,6 +93,7 @@ export function TrackList({
             key={track.id}
             track={track}
             onVolumeChange={onTrackVolumeChange}
+            onBpmChange={onTrackBpmChange}
             onToggleMute={onToggleTrackMute}
             onToggleSolo={onToggleTrackSolo}
             onDelete={onDeleteTrack}

@@ -16,6 +16,13 @@ const clampVolume = (value: unknown): number => {
   return Math.min(1, Math.max(0, value));
 };
 
+const clampTrackBpm = (value: unknown, fallbackBpm: number): number => {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return Math.max(30, Math.min(300, Math.round(fallbackBpm)));
+  }
+  return Math.max(30, Math.min(300, Math.round(value)));
+};
+
 const normalizeBars = (value: number): number => Math.max(0, Math.floor(value));
 
 const normalizeLength = (value: number): number => Math.max(1, Math.floor(value));
@@ -84,7 +91,7 @@ const parseClip = (raw: unknown, fallbackTrackId: string): TrackClipModel | null
   return null;
 };
 
-const parseTracks = (raw: unknown): TrackModel[] => {
+const parseTracks = (raw: unknown, fallbackBpm: number): TrackModel[] => {
   if (!Array.isArray(raw)) {
     return [];
   }
@@ -122,6 +129,7 @@ const parseTracks = (raw: unknown): TrackModel[] => {
       id: candidate.id,
       name: candidate.name,
       type: candidate.type,
+      bpm: clampTrackBpm(candidate.bpm, fallbackBpm),
       volume: clampVolume(candidate.volume),
       muted: Boolean(candidate.muted),
       solo: Boolean(candidate.solo),
@@ -132,7 +140,7 @@ const parseTracks = (raw: unknown): TrackModel[] => {
   return tracks;
 };
 
-const parseLegacyTracks = (raw: unknown): TrackModel[] => {
+const parseLegacyTracks = (raw: unknown, fallbackBpm: number): TrackModel[] => {
   if (!Array.isArray(raw)) {
     return [];
   }
@@ -157,6 +165,7 @@ const parseLegacyTracks = (raw: unknown): TrackModel[] => {
       id: DEFAULT_TRACK_ID,
       name: "Drums 1",
       type: "drum",
+      bpm: clampTrackBpm(undefined, fallbackBpm),
       volume: 1,
       muted: false,
       solo: false,
@@ -219,8 +228,8 @@ export function deserializeProject(raw: string): ProjectSnapshot | null {
       }
     }
 
-    const tracks = parseTracks(data.tracks);
-    const fallbackTracks = tracks.length > 0 ? tracks : parseLegacyTracks(data.clips);
+    const tracks = parseTracks(data.tracks, data.bpm);
+    const fallbackTracks = tracks.length > 0 ? tracks : parseLegacyTracks(data.clips, data.bpm);
 
     return {
       bpm: data.bpm,
