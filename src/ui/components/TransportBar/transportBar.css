@@ -1,0 +1,116 @@
+.transport-bar {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: 14px 18px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(30, 33, 40, 0.98), rgba(18, 20, 26, 0.98));
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  color: #e9edf4;
+  min-height: 64px;
+}
+
+.transport-group {
+  display: flex;
+  align-items: center;
+}
+
+.transport-group--controls {
+  gap: 10px;
+}
+
+.transport-btn {
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.06);
+  color: #e9edf4;
+  padding: 8px 14px;
+  border-radius: 10px;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition: transform 120ms ease, background 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.transport-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.22);
+}
+
+.transport-btn:active {
+  transform: translateY(1px);
+}
+
+.transport-btn--play {
+  background: linear-gradient(135deg, #2ddc88, #18b26b);
+  border-color: rgba(24, 178, 107, 0.65);
+  color: #0b1b12;
+  box-shadow: 0 10px 24px rgba(24, 178, 107, 0.35);
+}
+
+.transport-btn--play:hover {
+  background: linear-gradient(135deg, #32e194, #1bc174);
+}
+
+.transport-btn--export {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.24);
+}
+
+.transport-btn--export:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.transport-bpm {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.transport-label {
+  font-size: 12px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: rgba(233, 237, 244, 0.7);
+}
+
+.transport-bpm input {
+  width: 80px;
+  background: transparent;
+  border: none;
+  color: #f6f8fc;
+  font-size: 16px;
+  font-weight: 700;
+  text-align: right;
+  outline: none;
+}
+
+.transport-time {
+  padding: 8px 14px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  font-size: 18px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+  color: #d9e8ff;
+}
+
+.transport-group--save {
+  margin-left: auto;
+  gap: 8px;
+}
+
+.transport-status {
+  font-size: 12px;
+  color: rgba(233, 237, 244, 0.7);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}

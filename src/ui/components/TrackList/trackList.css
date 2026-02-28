@@ -1,0 +1,174 @@
+.track-list {
+  width: 100%;
+  padding: 18px 20px 22px;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: linear-gradient(180deg, rgba(20, 22, 28, 0.98), rgba(12, 14, 20, 0.98));
+  box-shadow: 0 18px 36px rgba(0, 0, 0, 0.4);
+  color: #e9edf4;
+}
+
+.track-list__header,
+.track-list__master,
+.track-row,
+.track-row__meta,
+.track-row__buttons,
+.track-list__master-meta {
+  display: flex;
+  align-items: center;
+}
+
+.track-list__header,
+.track-list__master,
+.track-row {
+  justify-content: space-between;
+}
+
+.track-list__header {
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.track-list__eyebrow {
+  margin: 0 0 4px;
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: rgba(233, 237, 244, 0.5);
+}
+
+.track-list h2,
+.track-list h3,
+.track-row h3 {
+  margin: 0;
+}
+
+.track-list__header h2 {
+  font-size: 16px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.track-list__actions,
+.track-row__buttons {
+  display: flex;
+  gap: 8px;
+}
+
+.track-list__actions button,
+.track-row__button {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
+  color: #e9edf4;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 8px 12px;
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.track-list__master {
+  gap: 20px;
+  padding: 14px 16px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  margin-bottom: 14px;
+}
+
+.track-list__master-meta,
+.track-row__meta {
+  gap: 12px;
+  min-width: 180px;
+}
+
+.track-list__master-meta span,
+.track-row__meta span,
+.track-row__slider span,
+.track-list__master-slider span {
+  display: block;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(233, 237, 244, 0.55);
+}
+
+.track-list__master-meta strong,
+.track-row__meta strong {
+  margin-left: auto;
+  font-size: 12px;
+  letter-spacing: 0.12em;
+  color: #8de2c8;
+}
+
+.track-list__master-slider,
+.track-row__slider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1;
+}
+
+.track-list__master-slider input,
+.track-row__slider input {
+  width: 100%;
+  accent-color: #8de2c8;
+}
+
+.track-list__rows {
+  display: grid;
+  gap: 10px;
+}
+
+.track-row {
+  gap: 20px;
+  padding: 14px 16px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.track-row__meta h3 {
+  font-size: 14px;
+}
+
+.track-row__button--active {
+  background: rgba(141, 226, 200, 0.18);
+  border-color: rgba(141, 226, 200, 0.45);
+  color: #8de2c8;
+}
+
+.track-row__button--danger {
+  border-color: rgba(255, 138, 138, 0.22);
+  color: rgba(255, 194, 194, 0.92);
+}
+
+.track-row__button--danger:hover {
+  background: rgba(255, 138, 138, 0.1);
+}
+
+@media (max-width: 900px) {
+  .track-list__header,
+  .track-list__master,
+  .track-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .track-list__actions,
+  .track-row__buttons {
+    justify-content: stretch;
+  }
+
+  .track-list__actions button,
+  .track-row__button {
+    flex: 1;
+  }
+
+  .track-list__master-meta,
+  .track-row__meta {
+    min-width: 0;
+  }
+}

@@ -1,0 +1,2 @@
+// Clock tests placeholder.
+export {};
