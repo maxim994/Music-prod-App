@@ -3,6 +3,7 @@ import type {
   AutomationPointModel,
   DrumClipModel,
   DrumPattern,
+  SynthClipModel,
   TrackModel
 } from "../model/types";
 import { encodeWav } from "./utils/wav";
@@ -48,6 +49,26 @@ const getTrackAudibleVolume = (
 
 const isDrumClip = (clip: TrackModel["clips"][number]): clip is DrumClipModel => clip.kind === "drum";
 const isAudioClip = (clip: TrackModel["clips"][number]): clip is AudioClipModel => clip.kind === "audio";
+const isSynthClip = (clip: TrackModel["clips"][number]): clip is SynthClipModel => clip.kind === "synth";
+
+const toOscillatorType = (oscillator: TrackModel["synthSettings"]["oscillator"]): OscillatorType =>
+  oscillator === "saw" ? "sawtooth" : oscillator;
+
+const midiToFrequency = (pitch: number): number => 440 * 2 ** ((pitch - 69) / 12);
+const clampFilterFrequency = (value: number): number => Math.max(80, Math.min(18_000, value));
+const createDriveCurve = (amount: number): Float32Array => {
+  const safeAmount = Math.max(0, Math.min(1, amount));
+  const samples = 512;
+  const curve = new Float32Array(samples);
+  const drive = 1 + safeAmount * 18;
+
+  for (let index = 0; index < samples; index += 1) {
+    const x = (index / (samples - 1)) * 2 - 1;
+    curve[index] = Math.tanh(x * drive);
+  }
+
+  return curve;
+};
 
 const sortAutomationPoints = (points: AutomationPointModel[]): AutomationPointModel[] =>
   [...points].sort((left, right) => left.bar - right.bar);
@@ -261,6 +282,73 @@ export class Renderer {
       }
     }
 
+    for (const track of options.tracks) {
+      if (track.type !== "synth" || !isTrackAudible(track, hasSolo)) {
+        continue;
+      }
+
+      const output = trackOutputs.get(track.id);
+      if (!output) {
+        continue;
+      }
+
+      const secondsPerBar = (60 / options.bpm) * 4;
+      const noteEvents: { startTime: number; duration: number; pitch: number; velocity: number }[] = [];
+
+      for (const clip of track.clips) {
+        if (!isSynthClip(clip)) {
+          continue;
+        }
+
+        const clipEndBar = clip.startBar + clip.lengthBars;
+        for (const note of clip.notes) {
+          const noteStartBar = clip.startBar + note.startBar;
+          if (noteStartBar >= clipEndBar || noteStartBar * secondsPerBar >= durationSeconds) {
+            continue;
+          }
+
+          const noteEndBar = Math.min(clipEndBar, clip.startBar + note.startBar + note.lengthBars);
+          const duration = Math.max(
+            0.05,
+            Math.min(durationSeconds, noteEndBar * secondsPerBar) - noteStartBar * secondsPerBar
+          );
+
+          noteEvents.push({
+            startTime: noteStartBar * secondsPerBar,
+            duration,
+            pitch: note.pitch,
+            velocity: note.velocity
+          });
+        }
+      }
+
+      noteEvents.sort((left, right) => left.startTime - right.startTime);
+      for (let index = 0; index < noteEvents.length; index += 1) {
+        const event = noteEvents[index];
+        const nextEvent = noteEvents[index + 1];
+        const previousEvent = index > 0 ? noteEvents[index - 1] : null;
+        const effectiveDuration =
+          nextEvent && nextEvent.startTime < event.startTime + event.duration
+            ? Math.max(0.03, nextEvent.startTime - event.startTime)
+            : event.duration;
+        const shouldGlide =
+          Boolean(track.synthSettings.glideEnabled) &&
+          previousEvent !== null &&
+          previousEvent.startTime + previousEvent.duration > event.startTime;
+
+        Renderer.scheduleSynthNote(
+          offline,
+          output,
+          event.startTime,
+          effectiveDuration,
+          event.pitch,
+          event.velocity,
+          track.synthSettings,
+          shouldGlide ? midiToFrequency(previousEvent.pitch) : null
+        );
+      }
+    }
+
     const rendered = await offline.startRendering();
     const wavBuffer = encodeWav(rendered);
     return new Blob([wavBuffer], { type: "audio/wav" });
@@ -427,5 +515,86 @@ export class Renderer {
       bytes[index] = binary.charCodeAt(index);
     }
     return bytes.buffer;
+  }
+
+  private static scheduleSynthNote(
+    ctx: BaseAudioContext,
+    destination: AudioNode,
+    startTime: number,
+    durationSeconds: number,
+    pitch: number,
+    velocity: number,
+    settings: TrackModel["synthSettings"],
+    glideStartFrequency: number | null = null
+  ): void {
+    const targetFrequency = midiToFrequency(pitch);
+    const shouldGlide = Boolean(settings.glideEnabled) && glideStartFrequency !== null;
+    const glideTime = Math.max(0, settings.glideTimeMs) / 1000;
+    const startFrequency = shouldGlide && glideStartFrequency !== null ? glideStartFrequency : targetFrequency;
+    const detuneSpread = Math.max(0, settings.detuneCents);
+
+    const inputGain = ctx.createGain();
+    inputGain.gain.value = 1 + settings.drive * 1.4;
+
+    const shaper = ctx.createWaveShaper();
+    shaper.curve = createDriveCurve(settings.drive) as unknown as Float32Array<ArrayBuffer>;
+    shaper.oversample = "2x";
+
+    const filter = ctx.createBiquadFilter();
+    filter.type = "lowpass";
+    const baseCutoff = clampFilterFrequency(settings.filterCutoff);
+    const filterPeak = clampFilterFrequency(settings.filterCutoff + settings.filterEnvelopeAmount);
+    const filterEnvAttackTime = startTime + Math.max(0.001, settings.filterEnvelopeAttack);
+    const filterEnvDecayTime = filterEnvAttackTime + Math.max(0.01, settings.filterEnvelopeDecay);
+    filter.frequency.setValueAtTime(baseCutoff, startTime);
+    filter.frequency.linearRampToValueAtTime(filterPeak, filterEnvAttackTime);
+    filter.frequency.linearRampToValueAtTime(baseCutoff, filterEnvDecayTime);
+    filter.Q.value = Math.max(0.1, settings.resonance);
+
+    const gain = ctx.createGain();
+    const peakGain = clampVolume(velocity);
+    const sustainGain = peakGain * clampVolume(settings.sustain);
+    const attackTime = startTime + Math.max(0.001, settings.attack);
+    const decayTime = attackTime + Math.max(0.01, settings.decay);
+    const releaseStart = Math.max(startTime + Math.max(0.05, durationSeconds), decayTime);
+    const releaseEnd = releaseStart + Math.max(0.01, settings.release);
+
+    gain.gain.setValueAtTime(0.0001, startTime);
+    gain.gain.linearRampToValueAtTime(Math.max(0.0001, peakGain), attackTime);
+    gain.gain.linearRampToValueAtTime(Math.max(0.0001, sustainGain), decayTime);
+    gain.gain.setValueAtTime(Math.max(0.0001, sustainGain), releaseStart);
+    gain.gain.linearRampToValueAtTime(0.0001, releaseEnd);
+
+    const oscillatorDetunes = detuneSpread > 0.01 ? [-detuneSpread, detuneSpread] : [0];
+    const oscillators = oscillatorDetunes.map((detune) => {
+      const oscillator = ctx.createOscillator();
+      oscillator.type = toOscillatorType(settings.oscillator);
+      oscillator.detune.setValueAtTime(detune, startTime);
+      oscillator.frequency.setValueAtTime(startFrequency, startTime);
+      if (shouldGlide && glideTime > 0) {
+        oscillator.frequency.linearRampToValueAtTime(targetFrequency, startTime + glideTime);
+      } else {
+        oscillator.frequency.setValueAtTime(targetFrequency, startTime);
+      }
+      oscillator.connect(inputGain);
+      oscillator.start(startTime);
+      oscillator.stop(releaseEnd + 0.02);
+      return oscillator;
+    });
+
+    inputGain.connect(shaper);
+    shaper.connect(filter);
+    filter.connect(gain);
+    gain.connect(destination);
+
+    oscillators[0].onended = () => {
+      for (const oscillator of oscillators) {
+        oscillator.disconnect();
+      }
+      inputGain.disconnect();
+      shaper.disconnect();
+      filter.disconnect();
+      gain.disconnect();
+    };
   }
 }

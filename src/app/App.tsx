@@ -1,19 +1,24 @@
 import { useEffect, useRef, useState } from "react";
 import { Renderer } from "../audio/Renderer";
 import { DrumSynth } from "../audio/DrumSynth";
+import { SynthEngine } from "../audio/SynthEngine";
 import type {
   AutomationPointModel,
   AudioClipModel,
   DrumClipModel,
   DrumPatternModel,
   ProjectSnapshot,
+  SynthClipModel,
+  SynthNoteModel,
+  SynthSettingsModel,
   TrackClipModel,
   TrackModel,
   TrackType
 } from "../model/types";
-import { StepSequencer } from "../sequencer/StepSequencer";
+import { createDefaultSynthSettings as makeDefaultSynthSettings } from "../model/types";
 import { LocalProjectStore } from "../storage/LocalProjectStore";
 import { DrumMachine } from "../ui/components/DrumMachine/DrumMachine";
+import { SynthEditor } from "../ui/components/SynthEditor/SynthEditor";
 import { Timeline } from "../ui/components/Timeline/Timeline";
 import { TrackList } from "../ui/components/TrackList/TrackList";
 import { TransportBar } from "../ui/components/TransportBar/TransportBar";
@@ -29,6 +34,8 @@ type HistorySnapshot = {
   songBars: number;
   tracks: TrackModel[];
 };
+
+type AppView = "arrangement" | "synth";
 
 const MIN_GRID_RESOLUTION = 1 / 16;
 
@@ -50,12 +57,36 @@ const createDrumClip = (
   patternId
 });
 
+const createDefaultSynthNote = (id: string): SynthNoteModel => ({
+  id,
+  pitch: 60,
+  startBar: 0,
+  lengthBars: 1,
+  velocity: 0.85
+});
+
+const createSynthClip = (
+  id: string,
+  trackId: string,
+  startBar: number,
+  lengthBars: number,
+  notes: SynthNoteModel[] = []
+): SynthClipModel => ({
+  id,
+  kind: "synth",
+  trackId,
+  startBar,
+  lengthBars,
+  notes: [...notes].sort((left, right) => left.startBar - right.startBar || left.pitch - right.pitch)
+});
+
 const createTrack = (
   id: string,
   name: string,
   type: TrackType,
   clips: TrackClipModel[] = [],
   automationPoints: AutomationPointModel[] = [],
+  synthSettings: SynthSettingsModel = makeDefaultSynthSettings(),
   trackBpm = 120
 ): TrackModel => ({
   id,
@@ -65,6 +96,7 @@ const createTrack = (
   volume: 1,
   muted: false,
   solo: false,
+  synthSettings: { ...synthSettings },
   automationPoints: [...automationPoints].sort((a, b) => a.bar - b.bar),
   clips: clips.map((clip) => ({ ...clip, trackId: id }))
 });
@@ -86,8 +118,16 @@ const createDefaultTracks = (): TrackModel[] => [
   createTrack("track-1", "Drums 1", "drum", [
     createDrumClip("clip-1", "track-1", 0, 4, "A"),
     createDrumClip("clip-3", "track-1", 8, 4, "A")
-  ], [], 120),
-  createTrack("track-2", "Drums 2", "drum", [createDrumClip("clip-2", "track-2", 4, 4, "B")], [], 120)
+  ], [], makeDefaultSynthSettings(), 120),
+  createTrack(
+    "track-2",
+    "Drums 2",
+    "drum",
+    [createDrumClip("clip-2", "track-2", 4, 4, "B")],
+    [],
+    makeDefaultSynthSettings(),
+    120
+  )
 ];
 
 const getPatternDisplayName = (index: number) => String.fromCharCode(65 + index);
@@ -96,9 +136,53 @@ const isDrumClip = (clip: TrackClipModel): clip is DrumClipModel => clip.kind ==
 
 const isAudioClip = (clip: TrackClipModel): clip is AudioClipModel => clip.kind === "audio";
 
+const isSynthClip = (clip: TrackClipModel): clip is SynthClipModel => clip.kind === "synth";
+
 const clampVolume = (value: number): number => Math.min(1, Math.max(0, value));
 
 const clampAutomationValue = (value: number): number => Math.min(1, Math.max(0, value));
+
+const clampNoteVelocity = (value: number): number => Math.min(1, Math.max(0.05, value));
+
+const clampNotePitch = (value: number): number => Math.max(36, Math.min(84, Math.round(value)));
+
+const clampSynthSettingValue = (
+  key: keyof SynthSettingsModel,
+  value: number
+): number => {
+  if (!Number.isFinite(value)) {
+    return makeDefaultSynthSettings()[key] as number;
+  }
+
+  switch (key) {
+    case "attack":
+      return Math.max(0, Math.min(2, value));
+    case "decay":
+      return Math.max(0.01, Math.min(2, value));
+    case "sustain":
+      return Math.max(0, Math.min(1, value));
+    case "release":
+      return Math.max(0.01, Math.min(3, value));
+    case "filterCutoff":
+      return Math.max(200, Math.min(16_000, value));
+    case "resonance":
+      return Math.max(0.1, Math.min(20, value));
+    case "glideTimeMs":
+      return Math.max(0, Math.min(500, value));
+    case "detuneCents":
+      return Math.max(0, Math.min(20, value));
+    case "filterEnvelopeAmount":
+      return Math.max(0, Math.min(12_000, value));
+    case "filterEnvelopeAttack":
+      return Math.max(0, Math.min(1, value));
+    case "filterEnvelopeDecay":
+      return Math.max(0.01, Math.min(2, value));
+    case "drive":
+      return Math.max(0, Math.min(1, value));
+    default:
+      return value;
+  }
+};
 
 const clampTrackBpm = (value: number, fallbackBpm: number): number => {
   if (!Number.isFinite(value)) {
@@ -113,6 +197,30 @@ const roundBarPrecision = (value: number): number => Math.round(value * 1000) / 
 
 const normalizeAutomationBar = (value: number): number =>
   Math.round(Math.max(0, value) / MIN_GRID_RESOLUTION) * MIN_GRID_RESOLUTION;
+
+const sortSynthNotes = (notes: SynthNoteModel[]): SynthNoteModel[] =>
+  [...notes].sort((left, right) => left.startBar - right.startBar || left.pitch - right.pitch);
+
+const clampSynthNoteToClip = (
+  note: SynthNoteModel,
+  clipLengthBars: number,
+  snapStep: number | null = MIN_GRID_RESOLUTION
+): SynthNoteModel => {
+  const normalize = (value: number): number =>
+    snapStep ? Math.round(value / snapStep) * snapStep : roundBarPrecision(value);
+  const startBar = Math.max(0, normalize(note.startBar));
+  const maxLength = Math.max(snapStep ?? MIN_GRID_RESOLUTION, clipLengthBars - startBar);
+  return {
+    ...note,
+    pitch: clampNotePitch(note.pitch),
+    startBar: Math.min(startBar, Math.max(0, clipLengthBars - (snapStep ?? MIN_GRID_RESOLUTION))),
+    lengthBars: Math.max(
+      snapStep ?? MIN_GRID_RESOLUTION,
+      Math.min(normalize(note.lengthBars), maxLength)
+    ),
+    velocity: clampNoteVelocity(note.velocity)
+  };
+};
 
 const sortAutomationPoints = (points: AutomationPointModel[]): AutomationPointModel[] =>
   [...points].sort((a, b) => a.bar - b.bar);
@@ -225,16 +333,37 @@ const clampClipToSong = <T extends TrackClipModel>(
   const lengthBars = normalize(
     Math.max(snapStep ?? MIN_GRID_RESOLUTION, Math.min(clip.lengthBars, maxLength))
   );
-  return {
+  const nextClip = {
     ...clip,
     startBar,
     lengthBars
   };
+
+  if (clip.kind !== "synth") {
+    return nextClip as T;
+  }
+
+  return {
+    ...nextClip,
+    notes: sortSynthNotes(
+      clip.notes.map((note) => clampSynthNoteToClip(note, lengthBars, snapStep))
+    )
+  } as T;
 };
 
 const getActiveDrumClip = (track: TrackModel, barPosition: number): DrumClipModel | null => {
   const activeBar = Math.max(0, barPosition);
   const sortedClips = track.clips.filter(isDrumClip).sort((a, b) => a.startBar - b.startBar);
+  return (
+    sortedClips.find(
+      (clip) => activeBar >= clip.startBar && activeBar < clip.startBar + clip.lengthBars
+    ) ?? null
+  );
+};
+
+const getActiveSynthClip = (track: TrackModel, barPosition: number): SynthClipModel | null => {
+  const activeBar = Math.max(0, barPosition);
+  const sortedClips = track.clips.filter(isSynthClip).sort((a, b) => a.startBar - b.startBar);
   return (
     sortedClips.find(
       (clip) => activeBar >= clip.startBar && activeBar < clip.startBar + clip.lengthBars
@@ -263,6 +392,11 @@ const getNextIdSeed = (patterns: DrumPatternModel[], tracks: TrackModel[]): numb
     }
     for (const clip of track.clips) {
       register(clip.id);
+      if (isSynthClip(clip)) {
+        for (const note of clip.notes) {
+          register(note.id);
+        }
+      }
     }
   }
 
@@ -275,6 +409,47 @@ const ensureTracks = (tracks: TrackModel[], fallbackBpm: number): TrackModel[] =
       ...track,
       bpm: clampTrackBpm(track.bpm, fallbackBpm),
       volume: clampVolume(track.volume),
+      synthSettings: {
+        ...makeDefaultSynthSettings(),
+        ...track.synthSettings,
+        attack: clampSynthSettingValue("attack", track.synthSettings?.attack ?? makeDefaultSynthSettings().attack),
+        decay: clampSynthSettingValue("decay", track.synthSettings?.decay ?? makeDefaultSynthSettings().decay),
+        sustain: clampSynthSettingValue("sustain", track.synthSettings?.sustain ?? makeDefaultSynthSettings().sustain),
+        release: clampSynthSettingValue("release", track.synthSettings?.release ?? makeDefaultSynthSettings().release),
+        filterCutoff: clampSynthSettingValue(
+          "filterCutoff",
+          track.synthSettings?.filterCutoff ?? makeDefaultSynthSettings().filterCutoff
+        ),
+        resonance: clampSynthSettingValue(
+          "resonance",
+          track.synthSettings?.resonance ?? makeDefaultSynthSettings().resonance
+        ),
+        glideEnabled: Boolean(track.synthSettings?.glideEnabled),
+        glideTimeMs: clampSynthSettingValue(
+          "glideTimeMs",
+          track.synthSettings?.glideTimeMs ?? makeDefaultSynthSettings().glideTimeMs
+        ),
+        detuneCents: clampSynthSettingValue(
+          "detuneCents",
+          track.synthSettings?.detuneCents ?? makeDefaultSynthSettings().detuneCents
+        ),
+        filterEnvelopeAmount: clampSynthSettingValue(
+          "filterEnvelopeAmount",
+          track.synthSettings?.filterEnvelopeAmount ?? makeDefaultSynthSettings().filterEnvelopeAmount
+        ),
+        filterEnvelopeAttack: clampSynthSettingValue(
+          "filterEnvelopeAttack",
+          track.synthSettings?.filterEnvelopeAttack ?? makeDefaultSynthSettings().filterEnvelopeAttack
+        ),
+        filterEnvelopeDecay: clampSynthSettingValue(
+          "filterEnvelopeDecay",
+          track.synthSettings?.filterEnvelopeDecay ?? makeDefaultSynthSettings().filterEnvelopeDecay
+        ),
+        drive: clampSynthSettingValue(
+          "drive",
+          track.synthSettings?.drive ?? makeDefaultSynthSettings().drive
+        )
+      },
       automationPoints: sortAutomationPoints(
         (track.automationPoints ?? []).map((point) => ({
           ...point,
@@ -282,15 +457,25 @@ const ensureTracks = (tracks: TrackModel[], fallbackBpm: number): TrackModel[] =
           value: clampAutomationValue(point.value)
         }))
       ),
-      clips: track.clips.map((clip) => ({ ...clip, trackId: track.id }))
+      clips: track.clips.map((clip) =>
+        clip.kind === "synth"
+          ? {
+              ...clip,
+              trackId: track.id,
+              notes: sortSynthNotes(
+                clip.notes.map((note) => clampSynthNoteToClip(note, clip.lengthBars))
+              )
+            }
+          : { ...clip, trackId: track.id }
+      )
     }));
   }
 
-  return [createTrack("track-1", "Drums 1", "drum", [], [], fallbackBpm)];
+  return [createTrack("track-1", "Drums 1", "drum", [], [], makeDefaultSynthSettings(), fallbackBpm)];
 };
 
 const getDefaultTrackName = (type: TrackType, index: number): string =>
-  `${type === "drum" ? "Drums" : "Audio"} ${index}`;
+  `${type === "drum" ? "Drums" : type === "audio" ? "Audio" : "Synth"} ${index}`;
 
 const findClipById = (tracks: TrackModel[], clipId: string): TrackClipModel | null => {
   for (const track of tracks) {
@@ -324,7 +509,9 @@ export function App() {
   const [status, setStatus] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
   const [selectedClipId, setSelectedClipId] = useState<string | null>("clip-1");
+  const [selectedSynthClipId, setSelectedSynthClipId] = useState<string | null>(null);
   const [activeStep, setActiveStep] = useState(0);
+  const [appView, setAppView] = useState<AppView>("arrangement");
 
   const bpmRef = useRef(bpm);
   const selectedPatternIdRef = useRef(selectedPatternId);
@@ -334,16 +521,22 @@ export function App() {
   const songBarsRef = useRef(songBars);
   const masterVolumeRef = useRef(masterVolume);
   const rafIdRef = useRef<number | null>(null);
-  const lastTsRef = useRef<number | null>(null);
+  const schedulerTimerRef = useRef<number | null>(null);
   const storeRef = useRef<LocalProjectStore | null>(null);
-  const sequencerRef = useRef<StepSequencer | null>(null);
   const synthRef = useRef<DrumSynth | null>(null);
+  const synthEngineRef = useRef<SynthEngine | null>(null);
   const audioElementsRef = useRef(new Map<string, HTMLAudioElement>());
   const resumeAfterScrubRef = useRef(false);
+  const previewTrackIdRef = useRef<string | null>(null);
   const undoStackRef = useRef<HistorySnapshot[]>([]);
   const redoStackRef = useRef<HistorySnapshot[]>([]);
   const songStepRef = useRef(0);
   const idCounterRef = useRef(4);
+  const transportStartAudioTimeRef = useRef<number | null>(null);
+  const transportStartBarRef = useRef(0);
+  const schedulerStepCursorRef = useRef(0);
+  const playbackSessionIdRef = useRef(0);
+  const lastUiStepRef = useRef(-1);
 
   useEffect(() => {
     storeRef.current = new LocalProjectStore();
@@ -351,7 +544,6 @@ export function App() {
 
   useEffect(() => {
     bpmRef.current = bpm;
-    sequencerRef.current?.setBpm(bpm);
   }, [bpm]);
 
   useEffect(() => {
@@ -367,12 +559,20 @@ export function App() {
 
   useEffect(() => {
     tracksRef.current = tracks;
+    if (
+      previewTrackIdRef.current &&
+      !tracks.some((track) => track.id === previewTrackIdRef.current)
+    ) {
+      synthEngineRef.current?.stopPreviewNote(previewTrackIdRef.current);
+      previewTrackIdRef.current = null;
+    }
     if (isRunning) {
       syncAutomationMixer(playheadSeconds);
       return;
     }
 
     synthRef.current?.syncMixer(tracks, masterVolumeRef.current);
+    synthEngineRef.current?.syncMixer(tracks, masterVolumeRef.current);
   }, [tracks]);
 
   useEffect(() => {
@@ -387,7 +587,190 @@ export function App() {
     }
 
     synthRef.current?.syncMixer(tracksRef.current, masterVolume);
+    synthEngineRef.current?.syncMixer(tracksRef.current, masterVolume);
   }, [masterVolume]);
+
+  const getSharedAudioContext = (): AudioContext | null => {
+    const drumContext = synthRef.current?.ensureContext() ?? null;
+    if (drumContext) {
+      synthEngineRef.current?.attachContext(drumContext);
+      return drumContext;
+    }
+
+    const synthContext = synthEngineRef.current?.ensureContext() ?? null;
+    if (synthContext) {
+      return synthContext;
+    }
+
+    return null;
+  };
+
+  const clearTransportScheduler = () => {
+    if (schedulerTimerRef.current !== null) {
+      window.clearInterval(schedulerTimerRef.current);
+      schedulerTimerRef.current = null;
+    }
+  };
+
+  const stopTransportScheduler = () => {
+    clearTransportScheduler();
+    playbackSessionIdRef.current += 1;
+    transportStartAudioTimeRef.current = null;
+    schedulerStepCursorRef.current = 0;
+    lastUiStepRef.current = -1;
+  };
+
+  const getCurrentTransportBarPosition = (audioNow?: number): number => {
+    if (!isRunning || transportStartAudioTimeRef.current === null) {
+      const currentSecondsPerBar = (60 / Math.max(1, bpmRef.current)) * 4;
+      return playheadSeconds / Math.max(MIN_GRID_RESOLUTION, currentSecondsPerBar);
+    }
+
+    const sharedContext = getSharedAudioContext();
+    const now = audioNow ?? sharedContext?.currentTime ?? transportStartAudioTimeRef.current;
+    const projectSecondsPerBar = (60 / Math.max(1, bpmRef.current)) * 4;
+    return transportStartBarRef.current + (now - transportStartAudioTimeRef.current) / projectSecondsPerBar;
+  };
+
+  const scheduleTransportStep = (stepCursor: number, stepAudioTime: number) => {
+    const safeSongBars = Math.max(1, songBarsRef.current);
+    const totalSongSteps = Math.max(16, safeSongBars * 16);
+    const songStepIndex = ((stepCursor % totalSongSteps) + totalSongSteps) % totalSongSteps;
+    const stepIndex = songStepIndex % 16;
+    const barPosition = songStepIndex / 16;
+    const projectBpm = Math.max(1, bpmRef.current);
+    const projectStepSeconds = (60 / projectBpm) / 4;
+    const projectSecondsPerBar = projectStepSeconds * 16;
+    const patternMap = new Map(patternsRef.current.map((pattern) => [pattern.id, pattern.steps]));
+
+    for (const track of tracksRef.current) {
+      if (track.type === "synth") {
+        const activeClip = getActiveSynthClip(track, barPosition);
+        if (!activeClip || !synthEngineRef.current) {
+          continue;
+        }
+
+        const localStepStartBar = barPosition - activeClip.startBar;
+        const localStepEndBar = localStepStartBar + MIN_GRID_RESOLUTION;
+
+        for (const note of activeClip.notes) {
+          if (note.startBar < localStepStartBar || note.startBar >= localStepEndBar) {
+            continue;
+          }
+
+          const noteAudioTime =
+            stepAudioTime + (note.startBar - localStepStartBar) * projectSecondsPerBar;
+          const durationSeconds = Math.max(0.05, note.lengthBars * projectSecondsPerBar);
+
+          synthEngineRef.current.playNoteAtTime(
+            track.id,
+            note.pitch,
+            noteAudioTime,
+            durationSeconds,
+            note.velocity,
+            track.synthSettings
+          );
+        }
+        continue;
+      }
+
+      if (track.type !== "drum") {
+        continue;
+      }
+
+      const activeClip = getActiveDrumClip(track, barPosition);
+      if (!activeClip) {
+        continue;
+      }
+
+      const pattern = patternMap.get(activeClip.patternId);
+      if (!pattern || !synthRef.current) {
+        continue;
+      }
+
+      const tempoRatio = getTrackTempoRatio(track, projectBpm);
+      const localStartStep = songStepIndex * tempoRatio;
+      const localEndStep = (songStepIndex + 1) * tempoRatio;
+      const firstScheduledStep = Number.isInteger(localStartStep)
+        ? Math.floor(localStartStep)
+        : Math.ceil(localStartStep);
+
+      for (let localStep = firstScheduledStep; localStep < localEndStep; localStep += 1) {
+        const clipStepOffset = Math.round(activeClip.startBar * 16);
+        const localStepIndex = (((localStep - clipStepOffset) % 16) + 16) % 16;
+        const scheduledTime =
+          stepAudioTime + ((localStep - localStartStep) / tempoRatio) * projectStepSeconds;
+
+        if (pattern[0]?.[localStepIndex]) {
+          synthRef.current.playKickAtTime(track.id, scheduledTime);
+        }
+        if (pattern[1]?.[localStepIndex]) {
+          synthRef.current.playSnareAtTime(track.id, scheduledTime);
+        }
+        if (pattern[2]?.[localStepIndex]) {
+          synthRef.current.playHatAtTime(track.id, scheduledTime);
+        }
+      }
+    }
+
+    songStepRef.current = ((songStepIndex + 1) % totalSongSteps + totalSongSteps) % totalSongSteps;
+    if (lastUiStepRef.current !== stepIndex) {
+      lastUiStepRef.current = stepIndex;
+      setActiveStep(stepIndex);
+    }
+  };
+
+  const startTransportScheduler = (startBar: number) => {
+    const sharedContext = getSharedAudioContext();
+    if (!sharedContext) {
+      return;
+    }
+
+    clearTransportScheduler();
+    const safeSongBars = Math.max(1, songBarsRef.current);
+    const clampedStartBar = Math.max(0, Math.min(safeSongBars, startBar));
+    const normalizedStartBar =
+      clampedStartBar >= safeSongBars ? Math.max(0, safeSongBars - MIN_GRID_RESOLUTION) : clampedStartBar;
+    const sessionId = playbackSessionIdRef.current + 1;
+    const lookaheadSeconds = 0.14;
+    const schedulerIntervalMs = 25;
+    const projectSecondsPerBar = (60 / Math.max(1, bpmRef.current)) * 4;
+    const nextStepCursor = Math.ceil(normalizedStartBar * 16 - 1e-9);
+
+    playbackSessionIdRef.current = sessionId;
+    transportStartAudioTimeRef.current = sharedContext.currentTime;
+    transportStartBarRef.current = normalizedStartBar;
+    schedulerStepCursorRef.current = nextStepCursor;
+    songStepRef.current = ((Math.floor(normalizedStartBar * 16) % Math.max(16, safeSongBars * 16)) + Math.max(16, safeSongBars * 16)) % Math.max(16, safeSongBars * 16);
+    lastUiStepRef.current = Math.floor(normalizedStartBar * 16) % 16;
+    setActiveStep(lastUiStepRef.current);
+
+    const tick = () => {
+      if (playbackSessionIdRef.current !== sessionId || transportStartAudioTimeRef.current === null) {
+        return;
+      }
+
+      const now = sharedContext.currentTime;
+      const scheduleUntil = now + lookaheadSeconds;
+
+      while (true) {
+        const nextStepBar = schedulerStepCursorRef.current / 16;
+        const nextStepAudioTime =
+          transportStartAudioTimeRef.current +
+          (nextStepBar - transportStartBarRef.current) * projectSecondsPerBar;
+
+        if (nextStepAudioTime > scheduleUntil) {
+          break;
+        }
+
+        scheduleTransportStep(schedulerStepCursorRef.current, nextStepAudioTime);
+        schedulerStepCursorRef.current += 1;
+      }
+    };
+
+    tick();
+    schedulerTimerRef.current = window.setInterval(tick, schedulerIntervalMs);
+  };
 
   const syncAudioPlayback = (running: boolean, nextPlayheadSeconds: number) => {
     const audioElements = audioElementsRef.current;
@@ -511,6 +894,7 @@ export function App() {
     }));
 
     synthRef.current?.syncMixer(adjustedTracks, masterVolumeRef.current);
+    synthEngineRef.current?.syncMixer(adjustedTracks, masterVolumeRef.current);
   };
 
   const cloneHistorySnapshot = (snapshot: HistorySnapshot): HistorySnapshot => structuredClone(snapshot);
@@ -591,69 +975,59 @@ export function App() {
   }, [tracks, selectedClipId]);
 
   useEffect(() => {
-    if (!sequencerRef.current) {
-      sequencerRef.current = new StepSequencer({
-        bpm,
-        steps: 16,
-        onStep: () => {
-          const totalSongSteps = Math.max(16, songBarsRef.current * 16);
-          const absoluteStep = songStepRef.current % totalSongSteps;
-          const stepIndex = absoluteStep % 16;
-          const barPosition = absoluteStep / 16;
-          setActiveStep(stepIndex);
-
-          const synth = synthRef.current;
-          if (synth) {
-            const patternMap = new Map(patternsRef.current.map((pattern) => [pattern.id, pattern.steps]));
-            const projectBpm = Math.max(1, bpmRef.current);
-            const projectStepSeconds = (60 / projectBpm) / 4;
-
-            for (const track of tracksRef.current) {
-              if (track.type !== "drum") {
-                continue;
-              }
-
-              const activeClip = getActiveDrumClip(track, barPosition);
-              if (!activeClip) {
-                continue;
-              }
-
-              const pattern = patternMap.get(activeClip.patternId);
-              if (!pattern) {
-                continue;
-              }
-
-              const tempoRatio = getTrackTempoRatio(track, projectBpm);
-              const localStartStep = absoluteStep * tempoRatio;
-              const localEndStep = (absoluteStep + 1) * tempoRatio;
-              const firstScheduledStep = Number.isInteger(localStartStep)
-                ? Math.floor(localStartStep)
-                : Math.ceil(localStartStep);
-
-              for (let localStep = firstScheduledStep; localStep < localEndStep; localStep += 1) {
-                const clipStepOffset = Math.round(activeClip.startBar * 16);
-                const localStepIndex = (((localStep - clipStepOffset) % 16) + 16) % 16;
-                const offsetSeconds =
-                  ((localStep - localStartStep) / tempoRatio) * projectStepSeconds;
-
-                if (pattern[0]?.[localStepIndex]) synth.playKick(track.id, offsetSeconds);
-                if (pattern[1]?.[localStepIndex]) synth.playSnare(track.id, offsetSeconds);
-                if (pattern[2]?.[localStepIndex]) synth.playHat(track.id, offsetSeconds);
-              }
-            }
-          }
-
-          songStepRef.current = (absoluteStep + 1) % totalSongSteps;
+    if (!selectedSynthClipId) {
+      if (appView === "synth") {
+        if (previewTrackIdRef.current) {
+          synthEngineRef.current?.stopPreviewNote(previewTrackIdRef.current);
+          previewTrackIdRef.current = null;
         }
-      });
+        setAppView("arrangement");
+      }
+      return;
     }
 
+    const clip = findClipById(tracks, selectedSynthClipId);
+    if (!clip || !isSynthClip(clip)) {
+      setSelectedSynthClipId(null);
+      if (appView === "synth") {
+        if (previewTrackIdRef.current) {
+          synthEngineRef.current?.stopPreviewNote(previewTrackIdRef.current);
+          previewTrackIdRef.current = null;
+        }
+        setAppView("arrangement");
+      }
+    }
+  }, [appView, selectedSynthClipId, tracks]);
+
+  useEffect(() => {
+    if (appView === "synth") {
+      return;
+    }
+
+    if (!previewTrackIdRef.current) {
+      return;
+    }
+
+    synthEngineRef.current?.stopPreviewNote(previewTrackIdRef.current);
+    previewTrackIdRef.current = null;
+  }, [appView]);
+
+  useEffect(() => {
     if (!synthRef.current) {
       synthRef.current = new DrumSynth();
     }
 
+    if (!synthEngineRef.current) {
+      synthEngineRef.current = new SynthEngine();
+      const sharedContext = synthRef.current.getAudioContext();
+      if (sharedContext) {
+        synthEngineRef.current.attachContext(sharedContext);
+      }
+    }
+
     return () => {
-      sequencerRef.current?.stop();
+      stopTransportScheduler();
+      synthEngineRef.current?.stopAllVoices();
     };
   }, []);
 
@@ -663,18 +1037,13 @@ export function App() {
         cancelAnimationFrame(rafIdRef.current);
         rafIdRef.current = null;
       }
-      lastTsRef.current = null;
       return;
     }
 
-    const tick = (ts: number) => {
-      if (lastTsRef.current === null) {
-        lastTsRef.current = ts;
-      }
-      const deltaMs = ts - lastTsRef.current;
-      lastTsRef.current = ts;
-
-      setPlayheadSeconds((prev) => prev + deltaMs / 1000);
+    const tick = () => {
+      const currentBar = getCurrentTransportBarPosition();
+      const currentSecondsPerBar = (60 / Math.max(1, bpmRef.current)) * 4;
+      setPlayheadSeconds(currentBar * currentSecondsPerBar);
       rafIdRef.current = requestAnimationFrame(tick);
     };
 
@@ -684,7 +1053,6 @@ export function App() {
         cancelAnimationFrame(rafIdRef.current);
         rafIdRef.current = null;
       }
-      lastTsRef.current = null;
     };
   }, [isRunning]);
 
@@ -701,28 +1069,31 @@ export function App() {
     setPlayheadSeconds(nextSeconds);
     setActiveStep(nextStep % 16);
     songStepRef.current = nextStep;
-    sequencerRef.current?.setStepIndex(nextStep % 16);
+    transportStartBarRef.current = clampedBars;
   };
 
   useEffect(() => {
-    if (!sequencerRef.current || !synthRef.current) {
+    if (!synthRef.current || !synthEngineRef.current) {
       return;
     }
 
     if (isRunning) {
+      const currentBar = getCurrentTransportBarPosition();
       const totalSongSteps = Math.max(16, songBars * 16);
-      const nextStep = ((Math.floor(playheadBars * 16) % totalSongSteps) + totalSongSteps) % totalSongSteps;
-      songStepRef.current = nextStep;
+      const nextStep = ((Math.floor(currentBar * 16) % totalSongSteps) + totalSongSteps) % totalSongSteps;
+      const currentTransportSeconds = currentBar * secondsPerBar;
       setActiveStep(nextStep % 16);
+      setPlayheadSeconds(currentTransportSeconds);
 
-      synthRef.current.ensureContext();
-      syncAutomationMixer(playheadSeconds);
-
-      sequencerRef.current.setStepIndex(nextStep % 16);
-      sequencerRef.current.setBpm(bpm);
-      sequencerRef.current.start();
+      const sharedContext = getSharedAudioContext();
+      if (!sharedContext) {
+        return;
+      }
+      syncAutomationMixer(currentTransportSeconds);
+      startTransportScheduler(currentBar);
     } else {
-      sequencerRef.current.stop();
+      stopTransportScheduler();
+      synthEngineRef.current?.stopAllVoices();
     }
   }, [isRunning, songBars, bpm]);
 
@@ -787,36 +1158,85 @@ export function App() {
   }, [redo, undo]);
 
   const handlePlay = () => {
+    if (previewTrackIdRef.current) {
+      synthEngineRef.current?.stopPreviewNote(previewTrackIdRef.current);
+      previewTrackIdRef.current = null;
+    }
     syncAudioPlayback(true, playheadSeconds);
     setIsRunning(true);
   };
 
+  const handleProjectBpmChange = (nextBpm: number) => {
+    if (!Number.isFinite(nextBpm)) {
+      return;
+    }
+
+    const clampedBpm = Math.max(30, Math.min(300, Math.round(nextBpm)));
+    if (clampedBpm === bpmRef.current) {
+      return;
+    }
+
+    const currentSecondsPerBar = (60 / Math.max(1, bpmRef.current)) * 4;
+    const nextSecondsPerBar = (60 / clampedBpm) * 4;
+    const sharedContext = synthRef.current?.getAudioContext();
+    const currentBar =
+      isRunning && transportStartAudioTimeRef.current !== null
+        ? transportStartBarRef.current +
+          ((sharedContext?.currentTime ?? transportStartAudioTimeRef.current) -
+            transportStartAudioTimeRef.current) /
+            currentSecondsPerBar
+        : playheadSeconds / Math.max(MIN_GRID_RESOLUTION, currentSecondsPerBar);
+
+    if (isRunning) {
+      stopTransportScheduler();
+      transportStartBarRef.current = currentBar;
+      setPlayheadSeconds(currentBar * nextSecondsPerBar);
+    }
+
+    setBpm(clampedBpm);
+  };
+
   const handlePause = () => {
+    if (previewTrackIdRef.current) {
+      synthEngineRef.current?.stopPreviewNote(previewTrackIdRef.current);
+      previewTrackIdRef.current = null;
+    }
+    stopTransportScheduler();
     syncAudioPlayback(false, playheadSeconds);
+    synthEngineRef.current?.stopAllVoices();
     setIsRunning(false);
   };
 
   const handleStop = () => {
     resumeAfterScrubRef.current = false;
+    if (previewTrackIdRef.current) {
+      synthEngineRef.current?.stopPreviewNote(previewTrackIdRef.current);
+      previewTrackIdRef.current = null;
+    }
     syncAudioPlayback(false, 0);
+    synthEngineRef.current?.stopAllVoices();
     setIsRunning(false);
     setPlayheadSeconds(0);
     setActiveStep(0);
     songStepRef.current = 0;
-    sequencerRef.current?.stop();
-    sequencerRef.current?.reset();
+    stopTransportScheduler();
+    transportStartBarRef.current = 0;
   };
 
   const handleBeginScrub = () => {
     resumeAfterScrubRef.current = isRunning;
+    if (previewTrackIdRef.current) {
+      synthEngineRef.current?.stopPreviewNote(previewTrackIdRef.current);
+      previewTrackIdRef.current = null;
+    }
     if (isRunning) {
       if (rafIdRef.current !== null) {
         cancelAnimationFrame(rafIdRef.current);
         rafIdRef.current = null;
       }
-      lastTsRef.current = null;
-      sequencerRef.current?.stop();
+      stopTransportScheduler();
       syncAudioPlayback(false, playheadSeconds);
+      synthEngineRef.current?.stopAllVoices();
       setIsRunning(false);
     }
   };
@@ -835,6 +1255,34 @@ export function App() {
     resumeAfterScrubRef.current = false;
     syncAudioPlayback(true, barPosition * secondsPerBar);
     setIsRunning(true);
+  };
+
+  const handleStartSynthPreview = (trackId: string, pitch: number) => {
+    const track = tracksRef.current.find((candidate) => candidate.id === trackId);
+    if (!track || track.type !== "synth") {
+      return;
+    }
+
+    getSharedAudioContext();
+    synthEngineRef.current?.startPreviewNote(trackId, pitch, 0.85, track.synthSettings);
+    previewTrackIdRef.current = trackId;
+  };
+
+  const handleStopSynthPreview = (trackId?: string) => {
+    const activeTrackId = trackId ?? previewTrackIdRef.current;
+    if (!activeTrackId) {
+      return;
+    }
+
+    synthEngineRef.current?.stopPreviewNote(activeTrackId);
+    if (previewTrackIdRef.current === activeTrackId) {
+      previewTrackIdRef.current = null;
+    }
+  };
+
+  const handleCloseSynthEditor = () => {
+    handleStopSynthPreview();
+    setAppView("arrangement");
   };
 
   const handleBeginClipChange = () => {
@@ -903,6 +1351,250 @@ export function App() {
           ? {
               ...track,
               automationPoints: track.automationPoints.filter((point) => point.id !== pointId)
+            }
+          : track
+      )
+    );
+  };
+
+  const handleBeginSynthNoteChange = () => {
+    pushHistoryState();
+  };
+
+  const handleBeginSynthSettingsChange = () => {
+    pushHistoryState();
+  };
+
+  const handleOpenSynthEditor = (trackId: string) => {
+    const track = tracks.find((candidate) => candidate.id === trackId && candidate.type === "synth");
+    if (!track) {
+      return;
+    }
+
+    const existingClip =
+      track.clips.find(
+        (clip) => clip.id === selectedSynthClipId && isSynthClip(clip)
+      ) ??
+      track.clips.find(isSynthClip) ??
+      null;
+
+    if (existingClip) {
+      selectedClipIdRef.current = existingClip.id;
+      setSelectedClipId(existingClip.id);
+      setSelectedSynthClipId(existingClip.id);
+      setAppView("synth");
+      return;
+    }
+
+    pushHistoryState();
+    const nextClipId = `clip-${idCounterRef.current++}`;
+    const nextNoteId = `note-${idCounterRef.current++}`;
+    const defaultLength = Math.max(MIN_GRID_RESOLUTION, Math.min(4, songBarsRef.current));
+    const nextClip = createSynthClip(nextClipId, trackId, 0, defaultLength, [
+      createDefaultSynthNote(nextNoteId)
+    ]);
+
+    setTracks((prev) =>
+      prev.map((candidate) =>
+        candidate.id === trackId
+          ? {
+              ...candidate,
+              clips: [...candidate.clips, nextClip]
+            }
+          : candidate
+      )
+    );
+    selectedClipIdRef.current = nextClipId;
+    setSelectedClipId(nextClipId);
+    setSelectedSynthClipId(nextClipId);
+    setAppView("synth");
+  };
+
+  const handleAddSynthNote = (
+    clipId: string,
+    pitch: number,
+    startBar: number,
+    lengthBars: number
+  ): string => {
+    pushHistoryState();
+    const synthSnap = snapEnabled ? MIN_GRID_RESOLUTION : null;
+    const nextNoteId = `note-${idCounterRef.current++}`;
+
+    setTracks((prev) =>
+      prev.map((track) => ({
+        ...track,
+        clips: track.clips.map((clip) => {
+          if (clip.id !== clipId || !isSynthClip(clip)) {
+            return clip;
+          }
+
+          const nextNote = clampSynthNoteToClip(
+            {
+              id: nextNoteId,
+              pitch,
+              startBar,
+              lengthBars,
+              velocity: 0.85
+            },
+            clip.lengthBars,
+            synthSnap
+          );
+
+          return {
+            ...clip,
+            notes: sortSynthNotes([...clip.notes, nextNote])
+          };
+        })
+      }))
+    );
+
+    return nextNoteId;
+  };
+
+  const handleMoveSynthNote = (
+    clipId: string,
+    noteId: string,
+    startBar: number,
+    pitch: number
+  ) => {
+    const synthSnap = snapEnabled ? MIN_GRID_RESOLUTION : null;
+
+    setTracks((prev) =>
+      prev.map((track) => ({
+        ...track,
+        clips: track.clips.map((clip) => {
+          if (clip.id !== clipId || !isSynthClip(clip)) {
+            return clip;
+          }
+
+          return {
+            ...clip,
+            notes: sortSynthNotes(
+              clip.notes.map((note) =>
+                note.id === noteId
+                  ? clampSynthNoteToClip({ ...note, startBar, pitch }, clip.lengthBars, synthSnap)
+                  : note
+              )
+            )
+          };
+        })
+      }))
+    );
+  };
+
+  const handleResizeSynthNote = (
+    clipId: string,
+    noteId: string,
+    startBar: number,
+    lengthBars: number
+  ) => {
+    const synthSnap = snapEnabled ? MIN_GRID_RESOLUTION : null;
+
+    setTracks((prev) =>
+      prev.map((track) => ({
+        ...track,
+        clips: track.clips.map((clip) => {
+          if (clip.id !== clipId || !isSynthClip(clip)) {
+            return clip;
+          }
+
+          return {
+            ...clip,
+            notes: sortSynthNotes(
+              clip.notes.map((note) =>
+                note.id === noteId
+                  ? clampSynthNoteToClip(
+                      { ...note, startBar, lengthBars },
+                      clip.lengthBars,
+                      synthSnap
+                    )
+                  : note
+              )
+            )
+          };
+        })
+      }))
+    );
+  };
+
+  const handleDeleteSynthNote = (clipId: string, noteId: string) => {
+    pushHistoryState();
+    setTracks((prev) =>
+      prev.map((track) => ({
+        ...track,
+        clips: track.clips.map((clip) =>
+          clip.id === clipId && isSynthClip(clip)
+            ? {
+                ...clip,
+                notes: clip.notes.filter((note) => note.id !== noteId)
+              }
+            : clip
+        )
+      }))
+    );
+  };
+
+  const handleUpdateSynthOscillator = (
+    trackId: string,
+    oscillator: SynthSettingsModel["oscillator"]
+  ) => {
+    setTracks((prev) =>
+      prev.map((track) =>
+        track.id === trackId
+          ? {
+              ...track,
+              synthSettings: {
+                ...track.synthSettings,
+                oscillator
+              }
+            }
+          : track
+      )
+    );
+  };
+
+  const handleUpdateSynthSettingValue = (
+    trackId: string,
+    key:
+      | "attack"
+      | "decay"
+      | "sustain"
+      | "release"
+      | "filterCutoff"
+      | "resonance"
+      | "glideTimeMs"
+      | "detuneCents"
+      | "filterEnvelopeAmount"
+      | "filterEnvelopeAttack"
+      | "filterEnvelopeDecay"
+      | "drive",
+    value: number
+  ) => {
+    setTracks((prev) =>
+      prev.map((track) =>
+        track.id === trackId
+          ? {
+              ...track,
+              synthSettings: {
+                ...track.synthSettings,
+                [key]: clampSynthSettingValue(key, value)
+              }
+            }
+          : track
+      )
+    );
+  };
+
+  const handleToggleSynthSetting = (trackId: string, key: "glideEnabled") => {
+    setTracks((prev) =>
+      prev.map((track) =>
+        track.id === trackId
+          ? {
+              ...track,
+              synthSettings: {
+                ...track.synthSettings,
+                [key]: !track.synthSettings[key]
+              }
             }
           : track
       )
@@ -989,11 +1681,12 @@ export function App() {
 
     setIsRunning(false);
     syncAudioPlayback(false, 0);
+    synthEngineRef.current?.stopAllVoices();
     setPlayheadSeconds(0);
     setActiveStep(0);
     songStepRef.current = 0;
-    sequencerRef.current?.stop();
-    sequencerRef.current?.reset();
+    stopTransportScheduler();
+    transportStartBarRef.current = 0;
     undoStackRef.current = [];
     redoStackRef.current = [];
     bpmRef.current = snapshot.bpm;
@@ -1011,6 +1704,9 @@ export function App() {
     setMasterVolume(clampVolume(snapshot.masterVolume ?? 1));
     setSelectedPatternId(nextSelectedPatternId);
     setSelectedClipId(null);
+    setSelectedSynthClipId(null);
+    previewTrackIdRef.current = null;
+    setAppView("arrangement");
     setStatus("Loaded");
   };
 
@@ -1100,6 +1796,7 @@ export function App() {
     const newId = `clip-${idCounterRef.current++}`;
     const activeSnapStep = snapEnabled ? gridResolution : null;
     const minLength = activeSnapStep ?? MIN_GRID_RESOLUTION;
+    const sourceClip = findClipById(tracks, clipId);
 
     setTracks((prev) =>
       prev.map((track) => {
@@ -1116,6 +1813,14 @@ export function App() {
           {
             ...source,
             id: newId,
+            ...(isSynthClip(source)
+              ? {
+                  notes: source.notes.map((note) => ({
+                    ...note,
+                    id: `note-${idCounterRef.current++}`
+                  }))
+                }
+              : {}),
             startBar,
             lengthBars
           },
@@ -1131,6 +1836,9 @@ export function App() {
     );
 
     setSelectedClipId(newId);
+    if (sourceClip && isSynthClip(sourceClip)) {
+      setSelectedSynthClipId(newId);
+    }
   };
 
   const handleDeleteClip = (clipId: string) => {
@@ -1142,6 +1850,7 @@ export function App() {
       }))
     );
     setSelectedClipId((prev) => (prev === clipId ? null : prev));
+    setSelectedSynthClipId((prev) => (prev === clipId ? null : prev));
   };
 
   const handleSetClipPattern = (clipId: string, patternId: string) => {
@@ -1239,11 +1948,44 @@ export function App() {
 
   const handleAddTrack = (type: TrackType) => {
     const nextId = `track-${idCounterRef.current++}`;
+    let nextSynthClipId: string | null = null;
 
     setTracks((prev) => {
       const trackNumber = prev.filter((track) => track.type === type).length + 1;
-      return [...prev, createTrack(nextId, getDefaultTrackName(type, trackNumber), type, [], [], bpm)];
+      if (type === "synth") {
+        nextSynthClipId = `clip-${idCounterRef.current++}`;
+        const nextNoteId = `note-${idCounterRef.current++}`;
+        const defaultLength = Math.max(MIN_GRID_RESOLUTION, Math.min(4, songBarsRef.current));
+        return [
+          ...prev,
+          createTrack(
+            nextId,
+            getDefaultTrackName(type, trackNumber),
+            type,
+            [
+              createSynthClip(nextSynthClipId, nextId, 0, defaultLength, [
+                createDefaultSynthNote(nextNoteId)
+              ])
+            ],
+            [],
+            makeDefaultSynthSettings(),
+            bpm
+          )
+        ];
+      }
+
+      return [
+        ...prev,
+        createTrack(nextId, getDefaultTrackName(type, trackNumber), type, [], [], makeDefaultSynthSettings(), bpm)
+      ];
     });
+
+    if (type === "synth" && nextSynthClipId) {
+      selectedClipIdRef.current = nextSynthClipId;
+      setSelectedClipId(nextSynthClipId);
+      setSelectedSynthClipId(nextSynthClipId);
+      setAppView("synth");
+    }
   };
 
   const handleAddAudioFiles = async (files: FileList) => {
@@ -1301,6 +2043,7 @@ export function App() {
         "audio",
         [],
         [],
+        makeDefaultSynthSettings(),
         bpmRef.current
       );
       nextTracks.push(audioTrack);
@@ -1356,6 +2099,7 @@ export function App() {
     pushHistoryState();
     const shouldResetSelection = trackToDelete.clips.some((clip) => clip.id === selectedClipId);
     synthRef.current?.removeTrack(trackId);
+    synthEngineRef.current?.removeTrack(trackId);
     for (const clip of trackToDelete.clips) {
       if (!isAudioClip(clip)) {
         continue;
@@ -1382,6 +2126,7 @@ export function App() {
               trackToDelete.type,
               [],
               [],
+              trackToDelete.synthSettings,
               trackToDelete.bpm
             )
           ];
@@ -1391,6 +2136,7 @@ export function App() {
 
     if (shouldResetSelection) {
       setSelectedClipId(null);
+      setSelectedSynthClipId(null);
     }
 
     setStatus(`Deleted ${trackToDelete.name}`);
@@ -1407,6 +2153,14 @@ export function App() {
           const activeDrumClip = getActiveDrumClip(track, loopedBars);
           if (activeDrumClip) {
             clipIds.push(activeDrumClip.id);
+          }
+          return clipIds;
+        }
+
+        if (track.type === "synth") {
+          const activeSynthClip = getActiveSynthClip(track, loopedBars);
+          if (activeSynthClip) {
+            clipIds.push(activeSynthClip.id);
           }
           return clipIds;
         }
@@ -1434,6 +2188,12 @@ export function App() {
         return clipIds;
       })
     : [];
+  const selectedEditorClip = selectedSynthClipId ? findClipById(tracks, selectedSynthClipId) : null;
+  const selectedSynthClip =
+    selectedEditorClip && isSynthClip(selectedEditorClip) ? selectedEditorClip : null;
+  const selectedSynthTrack = selectedSynthClip
+    ? tracks.find((track) => track.id === selectedSynthClip.trackId) ?? null
+    : null;
 
   return (
     <div className="app-root">
@@ -1444,7 +2204,7 @@ export function App() {
         onPlay={handlePlay}
         onPause={handlePause}
         onStop={handleStop}
-        onBpmChange={setBpm}
+        onBpmChange={handleProjectBpmChange}
         gridResolution={gridResolution}
         onGridResolutionChange={setGridResolution}
         snapEnabled={snapEnabled}
@@ -1458,104 +2218,138 @@ export function App() {
         onExportWav={handleExportWav}
         isExporting={exporting}
       />
-      <TrackList
-        tracks={tracks}
-        masterVolume={masterVolume}
-        onTrackVolumeChange={handleTrackVolumeChange}
-        onTrackBpmChange={handleTrackBpmChange}
-        onToggleTrackMute={handleToggleTrackMute}
-        onToggleTrackSolo={handleToggleTrackSolo}
-        onDeleteTrack={handleDeleteTrack}
-        onMasterVolumeChange={(volume) => setMasterVolume(clampVolume(volume))}
-        onAddDrumTrack={() => handleAddTrack("drum")}
-        onAddAudioFiles={handleAddAudioFiles}
-      />
-      <Timeline
-        bpm={bpm}
-        gridResolution={gridResolution}
-        snapEnabled={snapEnabled}
-        isRunning={isRunning}
-        playheadBars={playheadBars}
-        songBars={songBars}
-        tracks={tracks.map((track) => ({
-          id: track.id,
-          name: track.name,
-          type: track.type,
-          automationPoints: [...track.automationPoints],
-          clips: [...track.clips]
-            .sort((a, b) => a.startBar - b.startBar)
-            .map((clip) => ({
-              id: clip.id,
-              trackId: clip.trackId,
-              kind: clip.kind,
-              startBar: clip.startBar,
-              lengthBars: clip.lengthBars,
-              label:
-                clip.kind === "drum"
-                  ? getPatternDisplayName(
-                      Math.max(
-                        0,
-                        patterns.findIndex((pattern) => pattern.id === clip.patternId)
-                      )
-                    )
-                  : clip.name,
-              patternId: clip.kind === "drum" ? clip.patternId : undefined
-            }))
-        }))}
-        activeClipIds={activeClipIds}
-        selectedClipId={selectedClipId}
-        onAddAutomationPoint={handleAddAutomationPoint}
-        onBeginAutomationChange={handleBeginAutomationChange}
-        onDeleteAutomationPoint={handleDeleteAutomationPoint}
-        onMoveAutomationPoint={handleMoveAutomationPoint}
-        onSelectClip={(clipId) => {
-          selectedClipIdRef.current = clipId;
-          setSelectedClipId(clipId);
-          const clip = findClipById(tracks, clipId);
-          if (clip && isDrumClip(clip)) {
-            selectedPatternIdRef.current = clip.patternId;
-            setSelectedPatternId(clip.patternId);
-          }
-        }}
-        onBeginClipChange={handleBeginClipChange}
-        onMoveClip={handleMoveClip}
-        onResizeClip={handleResizeClip}
-        onDuplicateClip={handleDuplicateClip}
-        onDeleteClip={handleDeleteClip}
-        onChangeClipPattern={handleSetClipPattern}
-        onChangeClipTrack={handleSetClipTrack}
-        onBeginScrub={handleBeginScrub}
-        onScrubPlayhead={handleScrubPlayhead}
-        onEndScrub={handleEndScrub}
-        patternOptions={patterns.map((pattern, index) => ({
-          id: pattern.id,
-          name: getPatternDisplayName(index)
-        }))}
-        trackOptions={tracks.map((track) => ({
-          id: track.id,
-          name: track.name,
-          type: track.type
-        }))}
-      />
-      <DrumMachine
-        editPattern={
-          patterns.find((pattern) => pattern.id === selectedPatternId)?.steps ??
-          patterns[0]?.steps ??
-          createEmptyPattern()
-        }
-        patterns={patterns.map((pattern, index) => ({
-          id: pattern.id,
-          name: getPatternDisplayName(index)
-        }))}
-        onToggleStep={handleToggleStep}
-        activeStep={isRunning ? activeStep : -1}
-        selectedPatternId={selectedPatternId}
-        onSelectPattern={(patternId) => {
-          selectedPatternIdRef.current = patternId as DrumPatternId;
-          setSelectedPatternId(patternId as DrumPatternId);
-        }}
-        onClonePattern={handleClonePattern}
-      />
+      {appView === "arrangement" ? (
+        <TrackList
+          tracks={tracks}
+          masterVolume={masterVolume}
+          onTrackVolumeChange={handleTrackVolumeChange}
+          onTrackBpmChange={handleTrackBpmChange}
+          onToggleTrackMute={handleToggleTrackMute}
+          onToggleTrackSolo={handleToggleTrackSolo}
+          onDeleteTrack={handleDeleteTrack}
+          onMasterVolumeChange={(volume) => setMasterVolume(clampVolume(volume))}
+          onAddDrumTrack={() => handleAddTrack("drum")}
+          onAddSynthTrack={() => handleAddTrack("synth")}
+          onAddAudioFiles={handleAddAudioFiles}
+          onOpenSynthEditor={handleOpenSynthEditor}
+        />
+      ) : null}
+      {appView === "arrangement" ? (
+        <>
+          <Timeline
+            bpm={bpm}
+            gridResolution={gridResolution}
+            snapEnabled={snapEnabled}
+            isRunning={isRunning}
+            playheadBars={playheadBars}
+            songBars={songBars}
+            tracks={tracks.map((track) => ({
+              id: track.id,
+              name: track.name,
+              type: track.type,
+              automationPoints: [...track.automationPoints],
+              clips: [...track.clips]
+                .sort((a, b) => a.startBar - b.startBar)
+                .map((clip) => ({
+                  id: clip.id,
+                  trackId: clip.trackId,
+                  kind: clip.kind,
+                  startBar: clip.startBar,
+                  lengthBars: clip.lengthBars,
+                  label:
+                    clip.kind === "drum"
+                      ? getPatternDisplayName(
+                          Math.max(
+                            0,
+                            patterns.findIndex((pattern) => pattern.id === clip.patternId)
+                          )
+                        )
+                      : clip.kind === "audio"
+                        ? clip.name
+                        : "Synth",
+                  patternId: clip.kind === "drum" ? clip.patternId : undefined
+                }))
+            }))}
+            activeClipIds={activeClipIds}
+            selectedClipId={selectedClipId}
+            onAddAutomationPoint={handleAddAutomationPoint}
+            onBeginAutomationChange={handleBeginAutomationChange}
+            onDeleteAutomationPoint={handleDeleteAutomationPoint}
+            onMoveAutomationPoint={handleMoveAutomationPoint}
+            onSelectClip={(clipId) => {
+              selectedClipIdRef.current = clipId;
+              setSelectedClipId(clipId);
+              const clip = findClipById(tracks, clipId);
+              if (clip && isDrumClip(clip)) {
+                selectedPatternIdRef.current = clip.patternId;
+                setSelectedPatternId(clip.patternId);
+              }
+              if (clip && isSynthClip(clip)) {
+                setSelectedSynthClipId(clip.id);
+              }
+            }}
+            onBeginClipChange={handleBeginClipChange}
+            onMoveClip={handleMoveClip}
+            onResizeClip={handleResizeClip}
+            onDuplicateClip={handleDuplicateClip}
+            onDeleteClip={handleDeleteClip}
+            onChangeClipPattern={handleSetClipPattern}
+            onChangeClipTrack={handleSetClipTrack}
+            onBeginScrub={handleBeginScrub}
+            onScrubPlayhead={handleScrubPlayhead}
+            onEndScrub={handleEndScrub}
+            patternOptions={patterns.map((pattern, index) => ({
+              id: pattern.id,
+              name: getPatternDisplayName(index)
+            }))}
+            trackOptions={tracks.map((track) => ({
+              id: track.id,
+              name: track.name,
+              type: track.type
+            }))}
+          />
+          <DrumMachine
+            editPattern={
+              patterns.find((pattern) => pattern.id === selectedPatternId)?.steps ??
+              patterns[0]?.steps ??
+              createEmptyPattern()
+            }
+            patterns={patterns.map((pattern, index) => ({
+              id: pattern.id,
+              name: getPatternDisplayName(index)
+            }))}
+            onToggleStep={handleToggleStep}
+            activeStep={isRunning ? activeStep : -1}
+            selectedPatternId={selectedPatternId}
+            onSelectPattern={(patternId) => {
+              selectedPatternIdRef.current = patternId as DrumPatternId;
+              setSelectedPatternId(patternId as DrumPatternId);
+            }}
+            onClonePattern={handleClonePattern}
+          />
+        </>
+      ) : (
+        <SynthEditor
+          track={selectedSynthTrack}
+          clip={selectedSynthClip}
+          gridResolution={Math.min(gridResolution, MIN_GRID_RESOLUTION)}
+          snapEnabled={snapEnabled}
+          playheadBars={loopedBars}
+          isRunning={isRunning}
+          onBack={handleCloseSynthEditor}
+          onBeginNoteChange={handleBeginSynthNoteChange}
+          onAddNote={handleAddSynthNote}
+          onMoveNote={handleMoveSynthNote}
+          onResizeNote={handleResizeSynthNote}
+          onDeleteNote={handleDeleteSynthNote}
+          onStartPreviewNote={handleStartSynthPreview}
+          onStopPreviewNote={handleStopSynthPreview}
+          onBeginSettingsChange={handleBeginSynthSettingsChange}
+          onToggleSetting={handleToggleSynthSetting}
+          onChangeOscillator={handleUpdateSynthOscillator}
+          onChangeSetting={handleUpdateSynthSettingValue}
+        />
+      )}
     </div>
   );
 }

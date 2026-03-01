@@ -13,7 +13,9 @@ type TrackListProps = {
   onDeleteTrack: (trackId: string) => void;
   onMasterVolumeChange: (volume: number) => void;
   onAddDrumTrack: () => void;
+  onAddSynthTrack: () => void;
   onAddAudioFiles: (files: FileList) => void;
+  onOpenSynthEditor: (trackId: string) => void;
 };
 
 export function TrackList({
@@ -26,7 +28,9 @@ export function TrackList({
   onDeleteTrack,
   onMasterVolumeChange,
   onAddDrumTrack,
-  onAddAudioFiles
+  onAddSynthTrack,
+  onAddAudioFiles,
+  onOpenSynthEditor
 }: TrackListProps) {
   const audioInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -40,6 +44,9 @@ export function TrackList({
         <div className="track-list__actions">
           <button type="button" onClick={onAddDrumTrack}>
             Add Drum
+          </button>
+          <button type="button" onClick={onAddSynthTrack}>
+            Add Synth
           </button>
           <button
             type="button"
@@ -97,6 +104,7 @@ export function TrackList({
             onToggleMute={onToggleTrackMute}
             onToggleSolo={onToggleTrackSolo}
             onDelete={onDeleteTrack}
+            onOpenSynthEditor={onOpenSynthEditor}
           />
         ))}
       </div>

@@ -2,7 +2,7 @@ import { useRef } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 
 type ClipProps = {
-  kind: "drum" | "audio";
+  kind: "drum" | "audio" | "synth";
   label: string;
   startBars: number;
   lengthBars: number;

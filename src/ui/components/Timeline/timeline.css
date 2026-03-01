@@ -220,6 +220,12 @@
   box-shadow: 0 10px 18px rgba(255, 132, 64, 0.25);
 }
 
+.clip--synth {
+  background: linear-gradient(135deg, rgba(127, 255, 205, 0.82), rgba(46, 198, 161, 0.8));
+  border-color: rgba(127, 255, 205, 0.68);
+  box-shadow: 0 10px 18px rgba(46, 198, 161, 0.28);
+}
+
 .clip:active {
   cursor: grabbing;
 }

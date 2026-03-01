@@ -8,7 +8,7 @@ import { Grid } from "./Grid";
 type TimelineClip = {
   id: string;
   trackId: string;
-  kind: "drum" | "audio";
+  kind: "drum" | "audio" | "synth";
   startBar: number;
   lengthBars: number;
   label: string;
@@ -18,7 +18,7 @@ type TimelineClip = {
 type TimelineTrack = {
   id: string;
   name: string;
-  type: "drum" | "audio";
+  type: "drum" | "audio" | "synth";
   automationPoints: AutomationPointModel[];
   clips: TimelineClip[];
 };
@@ -49,7 +49,7 @@ type TimelineProps = {
   onScrubPlayhead: (barPosition: number) => void;
   onEndScrub: (barPosition: number) => void;
   patternOptions: { id: string; name: string }[];
-  trackOptions: { id: string; name: string; type: "drum" | "audio" }[];
+  trackOptions: { id: string; name: string; type: "drum" | "audio" | "synth" }[];
 };
 
 const VISIBLE_BARS = 16;

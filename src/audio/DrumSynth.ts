@@ -8,7 +8,7 @@ export class DrumSynth {
   private masterGain: GainNode | null = null;
   private trackGains = new Map<string, GainNode>();
 
-  ensureContext(): void {
+  ensureContext(): AudioContext | null {
     if (!this.context) {
       this.context = new AudioContext();
       this.masterGain = this.context.createGain();
@@ -18,6 +18,8 @@ export class DrumSynth {
     if (this.context.state === "suspended") {
       void this.context.resume();
     }
+
+    return this.context;
   }
 
   syncMixer(tracks: MixerTrackState[], masterVolume: number): void {
@@ -64,35 +66,47 @@ export class DrumSynth {
     this.trackGains.delete(trackId);
   }
 
+  getAudioContext(): AudioContext | null {
+    return this.context;
+  }
+
   playKick(trackId: string, timeOffsetSeconds = 0): void {
+    if (!this.context) return;
+    this.playKickAtTime(trackId, this.context.currentTime + Math.max(0, timeOffsetSeconds));
+  }
+
+  playKickAtTime(trackId: string, time: number): void {
     const output = this.getTrackOutput(trackId);
     if (!output || !this.context) return;
     const ctx = this.context;
-    const now = ctx.currentTime + Math.max(0, timeOffsetSeconds);
 
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
 
     osc.type = "sine";
-    osc.frequency.setValueAtTime(140, now);
-    osc.frequency.exponentialRampToValueAtTime(50, now + 0.12);
+    osc.frequency.setValueAtTime(140, time);
+    osc.frequency.exponentialRampToValueAtTime(50, time + 0.12);
 
-    gain.gain.setValueAtTime(0.0001, now);
-    gain.gain.exponentialRampToValueAtTime(0.8, now + 0.005);
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.2);
+    gain.gain.setValueAtTime(0.0001, time);
+    gain.gain.exponentialRampToValueAtTime(0.8, time + 0.005);
+    gain.gain.exponentialRampToValueAtTime(0.0001, time + 0.2);
 
     osc.connect(gain);
     gain.connect(output);
 
-    osc.start(now);
-    osc.stop(now + 0.22);
+    osc.start(time);
+    osc.stop(time + 0.22);
   }
 
   playSnare(trackId: string, timeOffsetSeconds = 0): void {
+    if (!this.context) return;
+    this.playSnareAtTime(trackId, this.context.currentTime + Math.max(0, timeOffsetSeconds));
+  }
+
+  playSnareAtTime(trackId: string, time: number): void {
     const output = this.getTrackOutput(trackId);
     if (!output || !this.context) return;
     const ctx = this.context;
-    const now = ctx.currentTime + Math.max(0, timeOffsetSeconds);
 
     const noise = ctx.createBufferSource();
     noise.buffer = this.createNoiseBuffer(0.2);
@@ -101,8 +115,8 @@ export class DrumSynth {
     noiseFilter.frequency.value = 1800;
 
     const noiseGain = ctx.createGain();
-    noiseGain.gain.setValueAtTime(0.25, now);
-    noiseGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.15);
+    noiseGain.gain.setValueAtTime(0.25, time);
+    noiseGain.gain.exponentialRampToValueAtTime(0.0001, time + 0.15);
 
     noise.connect(noiseFilter);
     noiseFilter.connect(noiseGain);
@@ -112,23 +126,27 @@ export class DrumSynth {
     tone.type = "triangle";
     tone.frequency.value = 180;
     const toneGain = ctx.createGain();
-    toneGain.gain.setValueAtTime(0.18, now);
-    toneGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.12);
+    toneGain.gain.setValueAtTime(0.18, time);
+    toneGain.gain.exponentialRampToValueAtTime(0.0001, time + 0.12);
 
     tone.connect(toneGain);
     toneGain.connect(output);
 
-    noise.start(now);
-    noise.stop(now + 0.2);
-    tone.start(now);
-    tone.stop(now + 0.2);
+    noise.start(time);
+    noise.stop(time + 0.2);
+    tone.start(time);
+    tone.stop(time + 0.2);
   }
 
   playHat(trackId: string, timeOffsetSeconds = 0): void {
+    if (!this.context) return;
+    this.playHatAtTime(trackId, this.context.currentTime + Math.max(0, timeOffsetSeconds));
+  }
+
+  playHatAtTime(trackId: string, time: number): void {
     const output = this.getTrackOutput(trackId);
     if (!output || !this.context) return;
     const ctx = this.context;
-    const now = ctx.currentTime + Math.max(0, timeOffsetSeconds);
 
     const noise = ctx.createBufferSource();
     noise.buffer = this.createNoiseBuffer(0.08);
@@ -138,15 +156,15 @@ export class DrumSynth {
     filter.frequency.value = 6000;
 
     const gain = ctx.createGain();
-    gain.gain.setValueAtTime(0.18, now);
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.06);
+    gain.gain.setValueAtTime(0.18, time);
+    gain.gain.exponentialRampToValueAtTime(0.0001, time + 0.06);
 
     noise.connect(filter);
     filter.connect(gain);
     gain.connect(output);
 
-    noise.start(now);
-    noise.stop(now + 0.08);
+    noise.start(time);
+    noise.stop(time + 0.08);
   }
 
   private getTrackOutput(trackId: string): GainNode | null {

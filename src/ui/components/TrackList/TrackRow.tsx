@@ -7,6 +7,7 @@ type TrackRowProps = {
   onToggleMute: (trackId: string) => void;
   onToggleSolo: (trackId: string) => void;
   onDelete: (trackId: string) => void;
+  onOpenSynthEditor: (trackId: string) => void;
 };
 
 export function TrackRow({
@@ -15,7 +16,8 @@ export function TrackRow({
   onBpmChange,
   onToggleMute,
   onToggleSolo,
-  onDelete
+  onDelete,
+  onOpenSynthEditor
 }: TrackRowProps) {
   return (
     <article className="track-row">
@@ -54,6 +56,15 @@ export function TrackRow({
       </div>
 
       <div className="track-row__buttons">
+        {track.type === "synth" ? (
+          <button
+            type="button"
+            className="track-row__button"
+            onClick={() => onOpenSynthEditor(track.id)}
+          >
+            Edit Synth
+          </button>
+        ) : null}
         <button
           type="button"
           className={`track-row__button ${track.muted ? "track-row__button--active" : ""}`}

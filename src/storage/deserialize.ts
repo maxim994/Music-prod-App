@@ -3,10 +3,14 @@ import type {
   DrumClipModel,
   DrumPatternModel,
   ProjectSnapshot,
+  SynthNoteModel,
+  SynthOscillatorType,
+  SynthSettingsModel,
   TrackClipModel,
   TrackModel,
   TrackType
 } from "../model/types";
+import { createDefaultSynthSettings as makeDefaultSynthSettings } from "../model/types";
 
 const DEFAULT_TRACK_ID = "track-1";
 
@@ -24,9 +28,13 @@ const clampTrackBpm = (value: unknown, fallbackBpm: number): number => {
   return Math.max(30, Math.min(300, Math.round(value)));
 };
 
-const normalizeBars = (value: number): number => Math.max(0, Math.floor(value));
+const MIN_GRID_RESOLUTION = 1 / 16;
 
-const normalizeLength = (value: number): number => Math.max(1, Math.floor(value));
+const normalizeBars = (value: number): number =>
+  Math.max(0, Math.round(value / MIN_GRID_RESOLUTION) * MIN_GRID_RESOLUTION);
+
+const normalizeLength = (value: number): number =>
+  Math.max(MIN_GRID_RESOLUTION, Math.round(value / MIN_GRID_RESOLUTION) * MIN_GRID_RESOLUTION);
 
 const normalizeAutomationBar = (value: number): number => Math.max(0, Math.round(value * 16) / 16);
 
@@ -48,12 +56,18 @@ const isPatternValid = (pattern: unknown): pattern is boolean[][] => {
   );
 };
 
-const isTrackType = (value: unknown): value is TrackType => value === "drum" || value === "audio";
+const isTrackType = (value: unknown): value is TrackType =>
+  value === "drum" || value === "audio" || value === "synth";
+
+const isSynthOscillator = (value: unknown): value is SynthOscillatorType =>
+  value === "sine" || value === "saw" || value === "square" || value === "triangle";
 
 const isDrumClip = (clip: TrackClipModel): clip is DrumClipModel => clip.kind === "drum";
 
 const isClipCompatible = (trackType: TrackType, clip: TrackClipModel): boolean =>
-  (trackType === "drum" && clip.kind === "drum") || (trackType === "audio" && clip.kind === "audio");
+  (trackType === "drum" && clip.kind === "drum") ||
+  (trackType === "audio" && clip.kind === "audio") ||
+  (trackType === "synth" && clip.kind === "synth");
 
 const parseAutomationPoint = (raw: unknown): AutomationPointModel | null => {
   if (!raw || typeof raw !== "object") {
@@ -69,6 +83,100 @@ const parseAutomationPoint = (raw: unknown): AutomationPointModel | null => {
     id: candidate.id,
     bar: normalizeAutomationBar(candidate.bar),
     value: clampAutomationValue(candidate.value)
+  };
+};
+
+const parseSynthSettings = (raw: unknown): SynthSettingsModel => {
+  const defaults = makeDefaultSynthSettings();
+  if (!raw || typeof raw !== "object") {
+    return defaults;
+  }
+
+  const candidate = raw as Record<string, unknown>;
+  return {
+    oscillator: isSynthOscillator(candidate.oscillator) ? candidate.oscillator : defaults.oscillator,
+    attack:
+      typeof candidate.attack === "number" && Number.isFinite(candidate.attack)
+        ? Math.max(0, Math.min(2, candidate.attack))
+        : defaults.attack,
+    decay:
+      typeof candidate.decay === "number" && Number.isFinite(candidate.decay)
+        ? Math.max(0.01, Math.min(2, candidate.decay))
+        : defaults.decay,
+    sustain:
+      typeof candidate.sustain === "number" && Number.isFinite(candidate.sustain)
+        ? Math.max(0, Math.min(1, candidate.sustain))
+        : defaults.sustain,
+    release:
+      typeof candidate.release === "number" && Number.isFinite(candidate.release)
+        ? Math.max(0.01, Math.min(3, candidate.release))
+        : defaults.release,
+    filterCutoff:
+      typeof candidate.filterCutoff === "number" && Number.isFinite(candidate.filterCutoff)
+        ? Math.max(200, Math.min(16_000, candidate.filterCutoff))
+        : defaults.filterCutoff,
+    resonance:
+      typeof candidate.resonance === "number" && Number.isFinite(candidate.resonance)
+        ? Math.max(0.1, Math.min(20, candidate.resonance))
+        : defaults.resonance,
+    glideEnabled: Boolean(candidate.glideEnabled),
+    glideTimeMs:
+      typeof candidate.glideTimeMs === "number" && Number.isFinite(candidate.glideTimeMs)
+        ? Math.max(0, Math.min(500, candidate.glideTimeMs))
+        : defaults.glideTimeMs,
+    detuneCents:
+      typeof candidate.detuneCents === "number" && Number.isFinite(candidate.detuneCents)
+        ? Math.max(0, Math.min(20, candidate.detuneCents))
+        : defaults.detuneCents,
+    filterEnvelopeAmount:
+      typeof candidate.filterEnvelopeAmount === "number" &&
+      Number.isFinite(candidate.filterEnvelopeAmount)
+        ? Math.max(0, Math.min(12_000, candidate.filterEnvelopeAmount))
+        : defaults.filterEnvelopeAmount,
+    filterEnvelopeAttack:
+      typeof candidate.filterEnvelopeAttack === "number" &&
+      Number.isFinite(candidate.filterEnvelopeAttack)
+        ? Math.max(0, Math.min(1, candidate.filterEnvelopeAttack))
+        : defaults.filterEnvelopeAttack,
+    filterEnvelopeDecay:
+      typeof candidate.filterEnvelopeDecay === "number" &&
+      Number.isFinite(candidate.filterEnvelopeDecay)
+        ? Math.max(0.01, Math.min(2, candidate.filterEnvelopeDecay))
+        : defaults.filterEnvelopeDecay,
+    drive:
+      typeof candidate.drive === "number" && Number.isFinite(candidate.drive)
+        ? Math.max(0, Math.min(1, candidate.drive))
+        : defaults.drive
+  };
+};
+
+const parseSynthNote = (raw: unknown): SynthNoteModel | null => {
+  if (!raw || typeof raw !== "object") {
+    return null;
+  }
+
+  const candidate = raw as Record<string, unknown>;
+  if (
+    typeof candidate.id !== "string" ||
+    typeof candidate.pitch !== "number" ||
+    typeof candidate.startBar !== "number" ||
+    typeof candidate.lengthBars !== "number" ||
+    !Number.isFinite(candidate.pitch) ||
+    !Number.isFinite(candidate.startBar) ||
+    !Number.isFinite(candidate.lengthBars)
+  ) {
+    return null;
+  }
+
+  return {
+    id: candidate.id,
+    pitch: Math.max(24, Math.min(96, Math.round(candidate.pitch))),
+    startBar: normalizeBars(candidate.startBar),
+    lengthBars: normalizeLength(candidate.lengthBars),
+    velocity:
+      typeof candidate.velocity === "number" && Number.isFinite(candidate.velocity)
+        ? Math.max(0, Math.min(1, candidate.velocity))
+        : 0.85
   };
 };
 
@@ -112,6 +220,28 @@ const parseClip = (raw: unknown, fallbackTrackId: string): TrackClipModel | null
       lengthBars,
       name: candidate.name,
       audioDataUrl: typeof candidate.audioDataUrl === "string" ? candidate.audioDataUrl : undefined
+    };
+  }
+
+  if (candidate.kind === "synth") {
+    const notes: SynthNoteModel[] = [];
+    if (Array.isArray(candidate.notes)) {
+      for (const note of candidate.notes) {
+        const parsedNote = parseSynthNote(note);
+        if (parsedNote) {
+          notes.push(parsedNote);
+        }
+      }
+      notes.sort((a, b) => a.startBar - b.startBar || a.pitch - b.pitch);
+    }
+
+    return {
+      id: candidate.id,
+      kind: "synth",
+      trackId,
+      startBar,
+      lengthBars,
+      notes
     };
   }
 
@@ -171,6 +301,7 @@ const parseTracks = (raw: unknown, fallbackBpm: number): TrackModel[] => {
       volume: clampVolume(candidate.volume),
       muted: Boolean(candidate.muted),
       solo: Boolean(candidate.solo),
+      synthSettings: parseSynthSettings(candidate.synthSettings),
       automationPoints,
       clips
     });
@@ -208,6 +339,7 @@ const parseLegacyTracks = (raw: unknown, fallbackBpm: number): TrackModel[] => {
       volume: 1,
       muted: false,
       solo: false,
+      synthSettings: makeDefaultSynthSettings(),
       automationPoints: [],
       clips
     }
