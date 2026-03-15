@@ -4,6 +4,7 @@ import type {
   DrumPatternModel,
   ProjectSnapshot,
   SynthNoteModel,
+  SynthMode,
   SynthOscillatorType,
   SynthSettingsModel,
   TrackClipModel,
@@ -62,6 +63,8 @@ const isTrackType = (value: unknown): value is TrackType =>
 const isSynthOscillator = (value: unknown): value is SynthOscillatorType =>
   value === "sine" || value === "saw" || value === "square" || value === "triangle";
 
+const isSynthMode = (value: unknown): value is SynthMode => value === "mono" || value === "poly";
+
 const isDrumClip = (clip: TrackClipModel): clip is DrumClipModel => clip.kind === "drum";
 
 const isClipCompatible = (trackType: TrackType, clip: TrackClipModel): boolean =>
@@ -94,6 +97,7 @@ const parseSynthSettings = (raw: unknown): SynthSettingsModel => {
 
   const candidate = raw as Record<string, unknown>;
   return {
+    mode: isSynthMode(candidate.mode) ? candidate.mode : defaults.mode,
     oscillator: isSynthOscillator(candidate.oscillator) ? candidate.oscillator : defaults.oscillator,
     attack:
       typeof candidate.attack === "number" && Number.isFinite(candidate.attack)

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Renderer } from "../audio/Renderer";
 import { DrumSynth } from "../audio/DrumSynth";
 import { SynthEngine } from "../audio/SynthEngine";
+import { getSynthPresetById } from "../model/synthPresets";
 import type {
   AutomationPointModel,
   AudioClipModel,
@@ -9,6 +10,7 @@ import type {
   DrumPatternModel,
   ProjectSnapshot,
   SynthClipModel,
+  SynthMode,
   SynthNoteModel,
   SynthSettingsModel,
   TrackClipModel,
@@ -412,6 +414,7 @@ const ensureTracks = (tracks: TrackModel[], fallbackBpm: number): TrackModel[] =
       synthSettings: {
         ...makeDefaultSynthSettings(),
         ...track.synthSettings,
+        mode: track.synthSettings?.mode === "mono" ? "mono" : "poly",
         attack: clampSynthSettingValue("attack", track.synthSettings?.attack ?? makeDefaultSynthSettings().attack),
         decay: clampSynthSettingValue("decay", track.synthSettings?.decay ?? makeDefaultSynthSettings().decay),
         sustain: clampSynthSettingValue("sustain", track.synthSettings?.sustain ?? makeDefaultSynthSettings().sustain),
@@ -1601,6 +1604,57 @@ export function App() {
     );
   };
 
+  const handleSetSynthMode = (trackId: string, mode: SynthMode) => {
+    const track = tracksRef.current.find((candidate) => candidate.id === trackId);
+    if (!track || track.type !== "synth" || track.synthSettings.mode === mode) {
+      return;
+    }
+
+    pushHistoryState();
+    setTracks((prev) =>
+      prev.map((candidate) =>
+        candidate.id === trackId
+          ? {
+              ...candidate,
+              synthSettings: {
+                ...candidate.synthSettings,
+                mode
+              }
+            }
+          : candidate
+      )
+    );
+  };
+
+  const handleApplySynthPreset = (trackId: string, presetId: string) => {
+    const preset = getSynthPresetById(presetId);
+    const track = tracksRef.current.find((candidate) => candidate.id === trackId);
+    if (!preset || !track || track.type !== "synth") {
+      return;
+    }
+
+    const nextSettings = {
+      ...track.synthSettings,
+      ...preset.settings
+    };
+    const settingsChanged = JSON.stringify(track.synthSettings) !== JSON.stringify(nextSettings);
+    if (!settingsChanged) {
+      return;
+    }
+
+    pushHistoryState();
+    setTracks((prev) =>
+      prev.map((candidate) =>
+        candidate.id === trackId
+          ? {
+              ...candidate,
+              synthSettings: nextSettings
+            }
+          : candidate
+      )
+    );
+  };
+
   const handleToggleStep = (rowIndex: number, stepIndex: number) => {
     pushHistoryState();
     setPatterns((prev) =>
@@ -2345,6 +2399,8 @@ export function App() {
           onStartPreviewNote={handleStartSynthPreview}
           onStopPreviewNote={handleStopSynthPreview}
           onBeginSettingsChange={handleBeginSynthSettingsChange}
+          onApplyPreset={handleApplySynthPreset}
+          onChangeMode={handleSetSynthMode}
           onToggleSetting={handleToggleSynthSetting}
           onChangeOscillator={handleUpdateSynthOscillator}
           onChangeSetting={handleUpdateSynthSettingValue}

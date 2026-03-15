@@ -1,6 +1,7 @@
 // Serializable data models.
 export type TrackType = "drum" | "audio" | "synth";
 export type SynthOscillatorType = "sine" | "saw" | "square" | "triangle";
+export type SynthMode = "mono" | "poly";
 
 export interface BaseClipModel {
   id: string;
@@ -42,6 +43,7 @@ export interface AutomationPointModel {
 }
 
 export interface SynthSettingsModel {
+  mode: SynthMode;
   oscillator: SynthOscillatorType;
   attack: number;
   decay: number;
@@ -59,6 +61,7 @@ export interface SynthSettingsModel {
 }
 
 export const createDefaultSynthSettings = (): SynthSettingsModel => ({
+  mode: "poly",
   oscillator: "saw",
   attack: 0.02,
   decay: 0.15,

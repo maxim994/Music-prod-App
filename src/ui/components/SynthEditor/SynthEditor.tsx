@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
+import { SYNTH_PRESETS } from "../../../model/synthPresets";
 import type { SynthClipModel, SynthSettingsModel, TrackModel } from "../../../model/types";
 import "./synthEditor.css";
 
@@ -19,6 +20,8 @@ type SynthEditorProps = {
   onStartPreviewNote: (trackId: string, pitch: number) => void;
   onStopPreviewNote: (trackId?: string) => void;
   onBeginSettingsChange: () => void;
+  onApplyPreset: (trackId: string, presetId: string) => void;
+  onChangeMode: (trackId: string, mode: TrackModel["synthSettings"]["mode"]) => void;
   onToggleSetting: (trackId: string, key: "glideEnabled") => void;
   onChangeOscillator: (
     trackId: string,
@@ -93,6 +96,8 @@ export function SynthEditor({
   onStartPreviewNote,
   onStopPreviewNote,
   onBeginSettingsChange,
+  onApplyPreset,
+  onChangeMode,
   onToggleSetting,
   onChangeOscillator,
   onChangeSetting
@@ -109,6 +114,17 @@ export function SynthEditor({
       ),
     [clip]
   );
+
+  const activePresetId = useMemo(() => {
+    if (!track) {
+      return "custom";
+    }
+
+    const matchingPreset = SYNTH_PRESETS.find((preset) =>
+      JSON.stringify(preset.settings) === JSON.stringify(track.synthSettings)
+    );
+    return matchingPreset?.id ?? "custom";
+  }, [track]);
 
   useEffect(() => {
     if (!selectedNoteId) {
@@ -371,6 +387,20 @@ export function SynthEditor({
       <section className="synth-editor__panel">
         <div className="synth-editor__group synth-editor__group--stack">
           <label>
+            <span>Preset</span>
+            <select value={activePresetId} onChange={(event) => onApplyPreset(track.id, event.target.value)}>
+              <option value="custom" disabled>
+                Custom
+              </option>
+              {SYNTH_PRESETS.map((preset) => (
+                <option key={preset.id} value={preset.id}>
+                  {preset.name} ({preset.category})
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label>
             <span>Oscillator</span>
             <select
               value={track.synthSettings.oscillator}
@@ -383,6 +413,19 @@ export function SynthEditor({
               <option value="saw">Saw</option>
               <option value="square">Square</option>
               <option value="triangle">Triangle</option>
+            </select>
+          </label>
+
+          <label>
+            <span>Mode</span>
+            <select
+              value={track.synthSettings.mode}
+              onChange={(event) =>
+                onChangeMode(track.id, event.target.value as TrackModel["synthSettings"]["mode"])
+              }
+            >
+              <option value="poly">Poly</option>
+              <option value="mono">Mono</option>
             </select>
           </label>
 
@@ -470,7 +513,7 @@ export function SynthEditor({
                 ))}
               </select>
             </label>
-            <span>{snapEnabled ? "Snap on" : "Snap off"} • Click pitch labels to preview</span>
+            <span>{snapEnabled ? "Snap on" : "Snap off"} | Click pitch labels to preview</span>
           </div>
         </header>
         <div className="synth-editor__roll-frame">

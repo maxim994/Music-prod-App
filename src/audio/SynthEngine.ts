@@ -4,14 +4,19 @@ type MixerTrackState = Pick<TrackModel, "id" | "volume" | "muted" | "solo">;
 
 type VoiceSlot = {
   busyUntil: number;
+  lastFrequency: number | null;
+  startedAt: number;
   voice: SynthVoice;
 };
 
 type PreviewVoiceState = {
+  busyUntil: number;
   pitch: number | null;
   velocity: number;
   voice: SynthVoice;
 };
+
+const MAX_POLY_VOICES = 8;
 
 const clampVolume = (value: number): number => Math.min(1, Math.max(0, value));
 
@@ -20,6 +25,7 @@ const toOscillatorType = (oscillator: SynthOscillatorType): OscillatorType =>
 
 const midiToFrequency = (pitch: number): number => 440 * 2 ** ((pitch - 69) / 12);
 const clampFilterFrequency = (value: number): number => Math.max(80, Math.min(18_000, value));
+
 const createDriveCurve = (amount: number): Float32Array => {
   const safeAmount = Math.max(0, Math.min(1, amount));
   const samples = 512;
@@ -37,8 +43,6 @@ const createDriveCurve = (amount: number): Float32Array => {
 class SynthVoice {
   private activeGain: GainNode | null = null;
   private activeOscillators: OscillatorNode[] = [];
-  private lastFrequency: number | null = null;
-  private lastReleaseBoundary = 0;
 
   constructor(private context: AudioContext) {}
 
@@ -48,7 +52,8 @@ class SynthVoice {
     frequency: number,
     durationSeconds: number,
     velocity: number,
-    settings: SynthSettingsModel
+    settings: SynthSettingsModel,
+    glideStartFrequency: number | null = null
   ): void {
     this.stop(time);
 
@@ -78,9 +83,8 @@ class SynthVoice {
     const releaseStart = Math.max(time + Math.max(0.05, durationSeconds), decayTime);
     const releaseEnd = releaseStart + Math.max(0.01, settings.release);
     const glideTime = Math.max(0, settings.glideTimeMs) / 1000;
-    const shouldGlide =
-      settings.glideEnabled && this.lastFrequency !== null && time <= this.lastReleaseBoundary + 0.001;
-    const startFrequency = shouldGlide && this.lastFrequency !== null ? this.lastFrequency : frequency;
+    const shouldGlide = settings.glideEnabled && glideStartFrequency !== null;
+    const startFrequency = shouldGlide && glideStartFrequency !== null ? glideStartFrequency : frequency;
 
     const detuneSpread = Math.max(0, settings.detuneCents);
     const oscillatorDetunes = detuneSpread > 0.01 ? [-detuneSpread, detuneSpread] : [0];
@@ -113,14 +117,13 @@ class SynthVoice {
 
     this.activeOscillators = oscillators;
     this.activeGain = gain;
-    this.lastFrequency = frequency;
-    this.lastReleaseBoundary = releaseEnd;
 
     oscillators[0].onended = () => {
       if (this.activeOscillators[0] === oscillators[0]) {
         this.activeOscillators = [];
         this.activeGain = null;
       }
+
       for (const oscillator of oscillators) {
         oscillator.disconnect();
       }
@@ -138,10 +141,10 @@ class SynthVoice {
 
     const safeTime = Math.max(this.context.currentTime, time);
     try {
-      this.activeGain.gain.cancelScheduledValues(safeTime);
-      const currentValue = this.activeGain.gain.value;
-      this.activeGain.gain.setValueAtTime(Math.max(0.0001, currentValue), safeTime);
-      this.activeGain.gain.linearRampToValueAtTime(0.0001, safeTime + 0.03);
+      const gainParam = this.activeGain.gain;
+      gainParam.cancelScheduledValues(safeTime);
+      gainParam.setValueAtTime(Math.max(0.0001, gainParam.value), safeTime);
+      gainParam.linearRampToValueAtTime(0.0001, safeTime + 0.03);
       for (const oscillator of this.activeOscillators) {
         oscillator.stop(safeTime + 0.04);
       }
@@ -270,18 +273,50 @@ export class SynthEngine {
     }
 
     const voices = this.getVoices(trackId);
-    const availableVoice =
-      voices.find((slot) => slot.busyUntil <= startTime) ?? voices[0];
+    if (voices.length === 0) {
+      return;
+    }
 
-    availableVoice.voice.trigger(
+    const frequency = midiToFrequency(pitch);
+    let selectedVoice = voices[0];
+
+    if (settings.mode === "mono") {
+      selectedVoice = voices[0];
+      for (const voice of voices.slice(1)) {
+        if (voice.busyUntil > startTime) {
+          voice.voice.stop(startTime);
+        }
+        voice.busyUntil = startTime;
+        voice.lastFrequency = null;
+        voice.startedAt = 0;
+      }
+    } else {
+      selectedVoice =
+        voices.find((slot) => slot.busyUntil <= startTime + 0.001) ??
+        [...voices].sort(
+          (left, right) => left.busyUntil - right.busyUntil || left.startedAt - right.startedAt
+        )[0];
+    }
+
+    const glideStartFrequency =
+      settings.glideEnabled &&
+      selectedVoice.lastFrequency !== null &&
+      selectedVoice.busyUntil > startTime
+        ? selectedVoice.lastFrequency
+        : null;
+
+    selectedVoice.voice.trigger(
       output,
       startTime,
-      midiToFrequency(pitch),
+      frequency,
       durationSeconds,
       velocity,
-      settings
+      settings,
+      glideStartFrequency
     );
-    availableVoice.busyUntil = startTime + Math.max(0.05, durationSeconds) + settings.release;
+    selectedVoice.busyUntil = startTime + Math.max(0.05, durationSeconds) + settings.release;
+    selectedVoice.lastFrequency = frequency;
+    selectedVoice.startedAt = startTime;
   }
 
   startPreviewNote(
@@ -302,16 +337,24 @@ export class SynthEngine {
 
     const previewVoice = this.getPreviewVoice(trackId);
     const now = this.context.currentTime;
+    const frequency = midiToFrequency(pitch);
+    const glideStartFrequency =
+      settings.glideEnabled && previewVoice.busyUntil > now && previewVoice.pitch !== null
+        ? midiToFrequency(previewVoice.pitch)
+        : null;
+
     previewVoice.pitch = pitch;
     previewVoice.velocity = clampVolume(velocity);
     previewVoice.voice.trigger(
       output,
       now,
-      midiToFrequency(pitch),
+      frequency,
       8,
       previewVoice.velocity,
-      settings
+      settings,
+      glideStartFrequency
     );
+    previewVoice.busyUntil = now + 8 + settings.release;
   }
 
   stopPreviewNote(trackId: string): void {
@@ -326,6 +369,7 @@ export class SynthEngine {
 
     previewVoice.voice.stop(this.context.currentTime);
     previewVoice.pitch = null;
+    previewVoice.busyUntil = this.context.currentTime;
   }
 
   stopAllVoices(): void {
@@ -338,12 +382,15 @@ export class SynthEngine {
       for (const slot of voices) {
         slot.voice.stop(now);
         slot.busyUntil = now;
+        slot.lastFrequency = null;
+        slot.startedAt = 0;
       }
     }
 
     for (const previewVoice of this.previewVoices.values()) {
       previewVoice.voice.stop(now);
       previewVoice.pitch = null;
+      previewVoice.busyUntil = now;
     }
   }
 
@@ -364,6 +411,7 @@ export class SynthEngine {
       const previewVoice = this.previewVoices.get(trackId);
       previewVoice?.voice.stop(now);
     }
+
     this.trackVoices.delete(trackId);
     this.previewVoices.delete(trackId);
   }
@@ -396,12 +444,12 @@ export class SynthEngine {
       return [];
     }
 
-    const voices: VoiceSlot[] = [
-      {
-        busyUntil: 0,
-        voice: new SynthVoice(this.context)
-      }
-    ];
+    const voices: VoiceSlot[] = Array.from({ length: MAX_POLY_VOICES }, () => ({
+      busyUntil: 0,
+      lastFrequency: null,
+      startedAt: 0,
+      voice: new SynthVoice(this.context as AudioContext)
+    }));
     this.trackVoices.set(trackId, voices);
     return voices;
   }
@@ -417,6 +465,7 @@ export class SynthEngine {
     }
 
     const previewVoice: PreviewVoiceState = {
+      busyUntil: 0,
       pitch: null,
       velocity: 0.85,
       voice: new SynthVoice(this.context)

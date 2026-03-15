@@ -62,7 +62,7 @@
 }
 
 .synth-editor__group--stack {
-  grid-template-columns: minmax(160px, 220px) auto;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
   align-items: end;
   gap: 18px;
 }

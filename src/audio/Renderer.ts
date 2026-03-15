@@ -73,6 +73,26 @@ const createDriveCurve = (amount: number): Float32Array => {
 const sortAutomationPoints = (points: AutomationPointModel[]): AutomationPointModel[] =>
   [...points].sort((left, right) => left.bar - right.bar);
 
+type SynthNoteEvent = {
+  duration: number;
+  pitch: number;
+  startTime: number;
+  velocity: number;
+};
+
+const buildMonophonicNoteEvents = (events: SynthNoteEvent[]): SynthNoteEvent[] =>
+  events.map((event, index) => {
+    const nextEvent = events[index + 1];
+    if (!nextEvent || nextEvent.startTime >= event.startTime + event.duration) {
+      return event;
+    }
+
+    return {
+      ...event,
+      duration: Math.max(0.03, nextEvent.startTime - event.startTime)
+    };
+  });
+
 const getTrackAutomationValueAtBar = (
   track: Pick<TrackModel, "volume" | "automationPoints">,
   barPosition: number
@@ -293,7 +313,7 @@ export class Renderer {
       }
 
       const secondsPerBar = (60 / options.bpm) * 4;
-      const noteEvents: { startTime: number; duration: number; pitch: number; velocity: number }[] = [];
+      const noteEvents: SynthNoteEvent[] = [];
 
       for (const clip of track.clips) {
         if (!isSynthClip(clip)) {
@@ -322,17 +342,18 @@ export class Renderer {
         }
       }
 
-      noteEvents.sort((left, right) => left.startTime - right.startTime);
-      for (let index = 0; index < noteEvents.length; index += 1) {
-        const event = noteEvents[index];
-        const nextEvent = noteEvents[index + 1];
-        const previousEvent = index > 0 ? noteEvents[index - 1] : null;
-        const effectiveDuration =
-          nextEvent && nextEvent.startTime < event.startTime + event.duration
-            ? Math.max(0.03, nextEvent.startTime - event.startTime)
-            : event.duration;
+      const sortedNoteEvents = noteEvents.sort((left, right) => left.startTime - right.startTime);
+      const scheduledEvents =
+        track.synthSettings.mode === "mono"
+          ? buildMonophonicNoteEvents(sortedNoteEvents)
+          : sortedNoteEvents;
+
+      for (let index = 0; index < scheduledEvents.length; index += 1) {
+        const event = scheduledEvents[index];
+        const previousEvent = index > 0 ? scheduledEvents[index - 1] : null;
         const shouldGlide =
           Boolean(track.synthSettings.glideEnabled) &&
+          track.synthSettings.mode === "mono" &&
           previousEvent !== null &&
           previousEvent.startTime + previousEvent.duration > event.startTime;
 
@@ -340,7 +361,7 @@ export class Renderer {
           offline,
           output,
           event.startTime,
-          effectiveDuration,
+          event.duration,
           event.pitch,
           event.velocity,
           track.synthSettings,
